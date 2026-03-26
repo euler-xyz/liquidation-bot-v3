@@ -1,3 +1,4 @@
-fn main() {
-    println!("Hello, world!");
-}
+mod subgraph;
+
+#[tokio::main]
+async fn main() {}
