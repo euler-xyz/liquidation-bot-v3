@@ -1,0 +1,6 @@
+[package]
+name = "liquidation-bot-v3"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
