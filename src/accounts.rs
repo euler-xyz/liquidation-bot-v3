@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use alloy::primitives::Address;
-use itertools::iproduct;
+use itertools::{Itertools, iproduct};
 
-use crate::types::{Account, OracleIdentifier, VaultAssetPosition, VaultDebtPosition};
+use crate::types::{Account, OracleIdentifier, Vault, VaultAssetPosition, VaultDebtPosition};
 
 pub struct AccountsTracker {
     accounts: HashMap<Address, Account>,
@@ -55,16 +55,22 @@ impl AccountsTracker {
 }
 
 impl Account {
+    /// Get all the vaults this account has relations to.
+    fn vaults(&self) -> Vec<Arc<Vault>> {
+        let mut vaults: Vec<Arc<Vault>> = self.assets.iter().map(|a| a.vault.clone()).collect();
+        vaults.extend(self.debt.iter().map(|d| d.vault.clone()));
+        vaults
+    }
+
     fn dependent_on(&self) -> Vec<OracleIdentifier> {
-        let mut dependents = Vec::new();
-        for (asset, debt) in iproduct!(&self.assets, &self.debt) {
-            dependents.push(OracleIdentifier {
-                base_asset: debt.vault.asset,
-                quote_asset: asset.vault.asset,
-                adapter: debt.vault.adapter,
-            });
-        }
-        dependents
+        self.vaults()
+            .iter()
+            .map(|v| OracleIdentifier {
+                base_asset: v.asset,
+                quote_asset: v.unit_of_account,
+                adapter: v.adapter,
+            })
+            .collect()
     }
 }
 
@@ -98,7 +104,8 @@ mod test {
                     amount: U256::from(100_000_000),
                     vault: Arc::from(Vault {
                         address: Address::random(),
-                        asset: oracle.quote_asset,
+                        asset: oracle.base_asset,
+                        unit_of_account: oracle.quote_asset,
                         borrow_interest_rate: (),
                         supply_interest_rate: (),
                         adapter: oracle.adapter,
@@ -110,7 +117,8 @@ mod test {
                 amount: U256::from(100_000_000),
                 vault: Arc::from(Vault {
                     address: Address::random(),
-                    asset: oracle.base_asset,
+                    asset: Address::random(),
+                    unit_of_account: Address::random(),
                     borrow_interest_rate: (),
                     supply_interest_rate: (),
                     adapter: oracle.adapter,

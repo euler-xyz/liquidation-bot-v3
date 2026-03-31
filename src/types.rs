@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use alloy::primitives::{Address, U256};
 
+#[derive(Clone, Debug)]
 pub struct Vault {
     pub address: Address,
     pub asset: Address,
+    pub unit_of_account: Address,
     pub borrow_interest_rate: (),
     pub supply_interest_rate: (),
     pub adapter: Address,
@@ -17,20 +19,20 @@ pub struct OracleIdentifier {
     pub adapter: Address,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Account {
     pub address: Address,
     pub debt: Vec<VaultDebtPosition>,
     pub assets: Vec<VaultAssetPosition>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VaultAssetPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VaultDebtPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,
@@ -62,6 +64,7 @@ impl Vault {
         Vault {
             address: Address::random(),
             asset: Address::random(),
+            unit_of_account: Address::random(),
             borrow_interest_rate: (),
             supply_interest_rate: (),
             adapter: Address::random(),
