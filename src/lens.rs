@@ -110,64 +110,30 @@ pub async fn fetch_account(
     evc: Address,
     account: Address,
 ) -> Account {
-    let lens = AccountLens::new(lens, provider);
+    let lens = AccountLens::new(lens, &provider);
     let result = lens
         .getAccountEnabledVaultsInfo(evc, account)
         .call()
         .await
         .unwrap();
 
-    let debt = result
-        .vaultAccountInfo
-        .iter()
-        .flat_map(|a| {
-            match a.borrowed {
-                U256::ZERO => None,
-                _ => {
-                    Some(VaultDebtPosition {
-                        amount: a.borrowed,
-                        // NOTE: We should be caching vaults and referencing those instead of
-                        // creating new ones.
-                        vault: Arc::from(Vault {
-                            address: a.vault,
-                            asset: a.asset,
-                            unit_of_account: a.liquidityInfo.unitOfAccount,
-                            borrow_interest_rate: (),
-                            supply_interest_rate: (),
-                            // NOTE: this is incorrect, we should be checking what adapter/oracle it uses.
-                            adapter: a.vault,
-                        }),
-                    })
-                }
-            }
-        })
-        .collect();
+    let mut debt = Vec::new();
+    let mut assets = Vec::new();
+    for v in result.vaultAccountInfo.iter() {
+        if !v.borrowed.is_zero() {
+            debt.push(VaultDebtPosition {
+                amount: v.borrowed,
+                vault: vaults.get_or_fetch(&provider, v.vault).await,
+            });
+        }
 
-    let assets = result
-        .vaultAccountInfo
-        .iter()
-        .flat_map(|a| {
-            match a.assets {
-                U256::ZERO => None,
-                _ => {
-                    Some(VaultAssetPosition {
-                        amount: a.assets,
-                        // NOTE: We should be caching vaults and referencing those instead of
-                        // creating new ones.
-                        vault: Arc::from(Vault {
-                            address: a.vault,
-                            asset: a.asset,
-                            unit_of_account: a.liquidityInfo.unitOfAccount,
-                            borrow_interest_rate: (),
-                            supply_interest_rate: (),
-                            // NOTE: this is incorrect, we should be checking what adapter/oracle it uses.
-                            adapter: a.vault,
-                        }),
-                    })
-                }
-            }
-        })
-        .collect();
+        if !v.assets.is_zero() {
+            assets.push(VaultAssetPosition {
+                amount: v.assets,
+                vault: vaults.get_or_fetch(&provider, v.vault).await,
+            });
+        }
+    }
 
     Account {
         address: account,
