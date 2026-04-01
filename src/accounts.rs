@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use alloy::primitives::Address;
-use itertools::{Itertools, iproduct};
 
 use crate::types::{Account, OracleIdentifier, Vault, VaultAssetPosition, VaultDebtPosition};
 

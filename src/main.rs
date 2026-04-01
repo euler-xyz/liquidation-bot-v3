@@ -1,16 +1,12 @@
 use alloy::{
-    primitives::{Address, U256, address},
-    providers::{DynProvider, Provider, ProviderBuilder},
+    primitives::address,
+    providers::{Provider, ProviderBuilder},
 };
-use std::{collections::HashMap, sync::Arc};
 
-use crate::{
-    lens::{AccountLens, fetch_account},
-    types::Vault,
-    vaults::Vaults,
-};
+use crate::{config::get_config, lens::fetch_account, vaults::Vaults};
 
 mod accounts;
+mod config;
 mod lens;
 mod subgraph;
 mod types;
@@ -18,17 +14,21 @@ mod vaults;
 
 #[tokio::main]
 async fn main() {
-    let provider = ProviderBuilder::new().connect_http("".parse().unwrap());
+    // Load the bot configuration.
+    let config = get_config().expect("Could not load the configuration for the bot");
+
+    // Build the provider.
+    let provider = ProviderBuilder::new().connect_http(config.rpc_url);
 
     // Our singleton vault store.
-    let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+    let vaults = &mut Vaults::new(config.vault_lens_address);
 
     dbg!(
         fetch_account(
             provider.erased(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             address!("0x5DaC9ccC215b9aF65b486066786F79d9aA0043DB"),
         )
         .await
