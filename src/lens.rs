@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::{error::Error, sync::Arc};
 
 use alloy::{
@@ -109,7 +110,7 @@ pub async fn fetch_account(
     lens: Address,
     evc: Address,
     account: Address,
-) -> Account {
+) -> Result<Account> {
     let lens = AccountLens::new(lens, &provider);
     let result = lens
         .getAccountEnabledVaultsInfo(evc, account)
@@ -123,21 +124,21 @@ pub async fn fetch_account(
         if !v.borrowed.is_zero() {
             debt.push(VaultDebtPosition {
                 amount: v.borrowed,
-                vault: vaults.get_or_fetch(&provider, v.vault).await,
+                vault: vaults.get_or_fetch(&provider, v.vault).await?,
             });
         }
 
         if !v.assets.is_zero() {
             assets.push(VaultAssetPosition {
                 amount: v.assets,
-                vault: vaults.get_or_fetch(&provider, v.vault).await,
+                vault: vaults.get_or_fetch(&provider, v.vault).await?,
             });
         }
     }
 
-    Account {
+    Ok(Account {
         address: account,
         debt,
         assets,
-    }
+    })
 }

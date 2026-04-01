@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use alloy::{primitives::Address, providers::DynProvider, sol};
 
 use crate::types::Vault;
+use anyhow::{Context, Result};
 
 pub struct Vaults {
     vault_lens: Address,
@@ -47,14 +48,25 @@ impl Vaults {
         }
     }
 
-    pub async fn get_or_fetch(&mut self, provider: &DynProvider, address: Address) -> Arc<Vault> {
+    pub async fn get_or_fetch(
+        &mut self,
+        provider: &DynProvider,
+        address: Address,
+    ) -> Result<Arc<Vault>> {
         // Check if we already have it stored.
         match self.vaults.get(&address) {
-            Some(vault) => vault.clone(),
+            Some(vault) => Ok(vault.clone()),
             None => {
                 // Fetch the vault and all its details.
                 let lens = VaultLens::new(self.vault_lens, provider);
-                let info = lens.getVaultInfoStatic(address).call().await.unwrap();
+                let info = lens
+                    .getVaultInfoStatic(address)
+                    .call()
+                    .await
+                    .with_context(|| {
+                        format!("Error while calling the VaultLens for vault {}", address)
+                    })?;
+
                 let vault = Arc::from(Vault {
                     address,
                     asset: info.asset,
@@ -66,7 +78,7 @@ impl Vaults {
 
                 self.vaults.insert(address, vault.clone());
 
-                vault
+                Ok(vault)
             }
         }
     }

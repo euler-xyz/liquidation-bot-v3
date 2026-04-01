@@ -11,7 +11,7 @@ pub struct AccountsTracker {
 }
 
 impl AccountsTracker {
-    fn new() -> Self {
+    pub fn new() -> Self {
         AccountsTracker {
             accounts: HashMap::new(),
             oracle_dependents: HashMap::new(),
@@ -19,7 +19,7 @@ impl AccountsTracker {
     }
 
     /// Add a new account to the tracker.
-    fn add(
+    pub fn add_as_account(
         &mut self,
         address: Address,
         assets: Vec<VaultAssetPosition>,
@@ -30,18 +30,20 @@ impl AccountsTracker {
             assets,
             debt,
         };
+    }
 
+    pub fn add(&mut self, account: Account) {
         account.dependent_on().iter().for_each(|o| {
             let od = self.oracle_dependents.entry(o.clone()).or_default();
             od.push(account.address);
         });
 
         // TODO: handle the case where we (accidentally?) replace an existing accounting.
-        let _ = self.accounts.insert(address, account);
+        let _ = self.accounts.insert(account.address, account);
     }
 
     /// Finds the accounts that are impacted when a specific oracle price changes.
-    fn get_impacted_accounts(&self, oracle: &OracleIdentifier) -> Vec<Account> {
+    pub fn get_impacted_accounts(&self, oracle: &OracleIdentifier) -> Vec<Account> {
         self.oracle_dependents
             .get(&oracle)
             .unwrap_or(&vec![])
@@ -96,7 +98,7 @@ mod test {
         };
 
         // Create two accounts and insert them into the tracker.
-        accounts.add(
+        accounts.add_as_account(
             account_to_find,
             vec![
                 VaultAssetPosition {
@@ -126,7 +128,7 @@ mod test {
         );
 
         for _ in 0..5_000 {
-            accounts.add(
+            accounts.add_as_account(
                 Address::random(),
                 vec![
                     VaultAssetPosition::generate_random(),

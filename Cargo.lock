@@ -2586,6 +2586,7 @@ dependencies = [
  "anyhow",
  "figment",
  "gql_client",
+ "itertools 0.14.0",
  "reqwest 0.13.2",
  "serde",
  "serde_json",

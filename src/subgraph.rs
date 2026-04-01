@@ -54,11 +54,12 @@ pub struct TrackingVaultBalancesArgs {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackingVaultBalancesResponseItem {
-    id: FixedBytes<40>,
-    account: Address,
-    vault: Address,
-    debt: U256,
-    address_prefix: FixedBytes<19>,
+    pub id: FixedBytes<40>,
+    pub account: Address,
+    pub vault: Address,
+    pub balance: U256,
+    pub debt: U256,
+    pub address_prefix: FixedBytes<19>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -84,6 +85,7 @@ pub async fn fetch_tracking_vault_balances(
                 account
                 vault
                 debt
+                balance
                 addressPrefix
             }
         }
