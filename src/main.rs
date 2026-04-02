@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::mpsc::{Sender, channel},
+};
 
 use alloy::{
     primitives::{Address, FixedBytes, U256, address},
@@ -6,11 +9,13 @@ use alloy::{
 };
 use itertools::Itertools;
 use reqwest::Url;
+use tokio::sync::mpsc::{self};
 
 use crate::{
     accounts::AccountsTracker,
     config::get_config,
     lens::fetch_account,
+    oracles::{OracleEvent, poll_oracles},
     subgraph::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
     },
@@ -22,6 +27,7 @@ use anyhow::{Context, Result, anyhow};
 mod accounts;
 mod config;
 mod lens;
+mod oracles;
 mod subgraph;
 mod types;
 mod vaults;
@@ -55,6 +61,21 @@ async fn main() {
             .await
             .unwrap(),
         );
+    }
+
+    let (s, mut r) = mpsc::channel::<OracleEvent>(100);
+
+    let initial_oracles = accounts.get_oracle_identifiers();
+    tokio::spawn(async move {
+        poll_oracles(provider.erased(), initial_oracles, s)
+            .await
+            .unwrap();
+    });
+
+    loop {
+        if let Some(update) = r.recv().await {
+            dbg!(update);
+        }
     }
 
     dbg!(accounts.get_impacted_accounts(&OracleIdentifier {

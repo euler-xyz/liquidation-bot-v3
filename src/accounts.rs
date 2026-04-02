@@ -42,6 +42,11 @@ impl AccountsTracker {
         let _ = self.accounts.insert(account.address, account);
     }
 
+    /// Get all unique oracle identifiers.
+    pub fn get_oracle_identifiers(&self) -> Vec<OracleIdentifier> {
+        self.oracle_dependents.keys().cloned().collect()
+    }
+
     /// Finds the accounts that are impacted when a specific oracle price changes.
     pub fn get_impacted_accounts(&self, oracle: &OracleIdentifier) -> Vec<Account> {
         self.oracle_dependents

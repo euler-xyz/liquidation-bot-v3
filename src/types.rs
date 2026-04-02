@@ -12,7 +12,7 @@ pub struct Vault {
     pub adapter: Address,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub struct OracleIdentifier {
     pub base_asset: Address,
     pub quote_asset: Address,
