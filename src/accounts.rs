@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use alloy::primitives::Address;
+use itertools::Itertools;
 
 use crate::types::{Account, OracleIdentifier, Vault, VaultAssetPosition, VaultDebtPosition};
 
@@ -25,11 +26,11 @@ impl AccountsTracker {
         assets: Vec<VaultAssetPosition>,
         debt: Vec<VaultDebtPosition>,
     ) {
-        let account = Account {
+        self.add(Account {
             address,
             assets,
             debt,
-        };
+        });
     }
 
     pub fn add(&mut self, account: Account) {
@@ -50,7 +51,7 @@ impl AccountsTracker {
     /// Finds the accounts that are impacted when a specific oracle price changes.
     pub fn get_impacted_accounts(&self, oracle: &OracleIdentifier) -> Vec<Account> {
         self.oracle_dependents
-            .get(&oracle)
+            .get(oracle)
             .unwrap_or(&vec![])
             .iter()
             // This unwrap is still safe as its impossible to be an oracle dependent and not be
@@ -58,24 +59,16 @@ impl AccountsTracker {
             .map(|a| self.accounts.get(a).unwrap().clone())
             .collect()
     }
-}
 
-impl Account {
-    /// Get all the vaults this account has relations to.
-    fn vaults(&self) -> Vec<Arc<Vault>> {
-        let mut vaults: Vec<Arc<Vault>> = self.assets.iter().map(|a| a.vault.clone()).collect();
-        vaults.extend(self.debt.iter().map(|d| d.vault.clone()));
-        vaults
-    }
-
-    fn dependent_on(&self) -> Vec<OracleIdentifier> {
-        self.vaults()
+    /// Finds all accounts that are affected by any of the oracle updates.
+    pub fn get_bulk_impacted_accounts(&self, oracles: Vec<OracleIdentifier>) -> Vec<Account> {
+        oracles
             .iter()
-            .map(|v| OracleIdentifier {
-                base_asset: v.asset,
-                quote_asset: v.unit_of_account,
-                adapter: v.adapter,
-            })
+            .flat_map(|o| self.oracle_dependents.get(o).cloned().unwrap_or(vec![]))
+            .unique()
+            // This unwrap is still safe as its impossible to be an oracle dependent and not be
+            // mapped in accounts. We should still get rid of it though.
+            .map(|address| self.accounts.get(&address).unwrap().clone())
             .collect()
     }
 }

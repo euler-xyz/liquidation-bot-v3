@@ -1,10 +1,7 @@
-use std::{
-    collections::HashMap,
-    sync::mpsc::{Sender, channel},
-};
+use std::collections::HashMap;
 
 use alloy::{
-    primitives::{Address, FixedBytes, U256, address},
+    primitives::{Address, FixedBytes, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
 };
 use itertools::Itertools;
@@ -15,19 +12,22 @@ use crate::{
     accounts::AccountsTracker,
     config::get_config,
     lens::fetch_account,
-    oracles::{OracleEvent, poll_oracles},
+    oracles::{OracleChange, poll_oracles},
+    prices::Prices,
     subgraph::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
     },
-    types::{Account, OracleIdentifier, VaultAssetPosition, VaultDebtPosition},
+    types::{Account, VaultAssetPosition, VaultDebtPosition},
     vaults::Vaults,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 
+mod account;
 mod accounts;
 mod config;
 mod lens;
 mod oracles;
+mod prices;
 mod subgraph;
 mod types;
 mod vaults;
@@ -44,6 +44,7 @@ async fn main() {
     let vaults = &mut Vaults::new(config.vault_lens_address);
 
     let mut accounts = AccountsTracker::new();
+    let mut prices = Prices::new();
 
     // Fetch all accounts that have debt.
     let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url).await.unwrap();
@@ -63,7 +64,7 @@ async fn main() {
         );
     }
 
-    let (s, mut r) = mpsc::channel::<OracleEvent>(100);
+    let (s, mut r) = mpsc::channel::<Vec<OracleChange>>(100);
 
     let initial_oracles = accounts.get_oracle_identifiers();
     tokio::spawn(async move {
@@ -73,16 +74,35 @@ async fn main() {
     });
 
     loop {
-        if let Some(update) = r.recv().await {
-            dbg!(update);
+        if let Some(oracle_updates) = r.recv().await {
+            // Update our prices with the new ones.
+            prices.update_bulk(oracle_updates.clone());
+
+            // Figure out what accounts are affected by this change.
+            let accounts_affected = accounts.get_bulk_impacted_accounts(
+                oracle_updates.iter().map(|oc| oc.oracle.clone()).collect(),
+            );
+
+            dbg!(accounts_affected.len());
+
+            let a: Vec<_> = accounts_affected
+                .iter()
+                // NOTE: Errors regarding missing oracles get hidden here by the `.ok()`
+                .flat_map(|a| a.calculate_health(&prices).ok())
+                .filter(|solvency| solvency.is_unhealthy())
+                .collect();
+
+            dbg!(a);
+
+            // Calculate the asset and debt values.
         }
     }
 
-    dbg!(accounts.get_impacted_accounts(&OracleIdentifier {
-        base_asset: address!("0x4200000000000000000000000000000000000006"),
-        quote_asset: address!("0x0000000000000000000000000000000000000348"),
-        adapter: address!("0x6e183458600e66047a0f4d356d9daa480da1ca59")
-    }));
+    // dbg!(accounts.get_impacted_accounts(&OracleIdentifier {
+    //     base_asset: address!("0x4200000000000000000000000000000000000006"),
+    //     quote_asset: address!("0x0000000000000000000000000000000000000348"),
+    //     adapter: address!("0x6e183458600e66047a0f4d356d9daa480da1ca59")
+    // }));
 }
 
 pub async fn fetch_list_of_accounts(url: Url) -> Result<Vec<Address>> {

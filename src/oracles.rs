@@ -11,10 +11,10 @@ pub enum OracleEvent {
     UpdatedPrices(Vec<OracleChange>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OracleChange {
-    oracle: OracleIdentifier,
-    price: U256,
+    pub oracle: OracleIdentifier,
+    pub price: U256,
 }
 
 struct OracleOutput {
@@ -26,7 +26,7 @@ struct OracleOutput {
 pub async fn poll_oracles(
     provider: DynProvider,
     initial_oracles: Vec<OracleIdentifier>,
-    event_channel: Sender<OracleEvent>,
+    event_channel: Sender<Vec<OracleChange>>,
 ) -> Result<()> {
     let mut oracles: HashMap<OracleIdentifier, OracleOutput> = HashMap::new();
 
@@ -45,7 +45,7 @@ pub async fn poll_oracles(
 
     // Send the entire set as a price change.
     event_channel
-        .send(OracleEvent::UpdatedPrices(
+        .send(
             oracles
                 .iter()
                 .map(|(k, p)| OracleChange {
@@ -53,12 +53,35 @@ pub async fn poll_oracles(
                     price: p.price,
                 })
                 .collect(),
-        ))
+        )
         .await?;
 
-    loop {}
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
 
-    Ok(())
+        let mut changes = Vec::new();
+        for (oracle, prev) in oracles.iter_mut() {
+            // Poll the oracle.
+            let new_price = oracle.fetch_price(&provider).await?;
+
+            // Check if the price has changed.
+            if prev.price != new_price {
+                // Update out store.
+                prev.price = new_price;
+
+                // Track this as having changed.
+                changes.push(OracleChange {
+                    oracle: oracle.clone(),
+                    price: new_price,
+                });
+            }
+        }
+
+        // Notify the main thread of the price changes, if any.
+        if !changes.is_empty() {
+            event_channel.send(changes).await?;
+        }
+    }
 }
 
 sol! {
