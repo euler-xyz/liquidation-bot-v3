@@ -3,14 +3,9 @@ use std::collections::HashMap;
 use alloy::{primitives::U256, providers::DynProvider, sol};
 use anyhow::Result;
 use tokio::sync::mpsc::Sender;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
-use crate::{oracles, types::OracleIdentifier};
-
-#[derive(Debug)]
-pub enum OracleEvent {
-    UpdatedPrices(Vec<OracleChange>),
-}
+use crate::types::OracleIdentifier;
 
 #[derive(Debug, Clone)]
 pub struct OracleChange {
@@ -34,10 +29,25 @@ pub async fn poll_oracles(
     // On start up we make sure to fetch all prices, this way there is never a situation in which we
     // do not already have a price.
     for oracle in initial_oracles.into_iter() {
+        let price = match oracle.fetch_price(&provider).await {
+            Ok(price) => price,
+            Err(e) => {
+                error!(
+                    "Error while fetching price for oracle {}: {} -> {}: {e}",
+                    oracle.adapter, oracle.base_asset, oracle.quote_asset
+                );
+
+                // NOTICE: For now we insert a fake price, otherwise if we do not do this then this
+                // oracle will not be tracked.
+                // TODO: Add a way to show a price is not availabe for an oracle.
+                U256::ZERO
+            }
+        };
+
         oracles.insert(
             oracle.clone(),
             OracleOutput {
-                price: oracle.fetch_price(&provider).await?,
+                price,
                 last_polled_at: (),
                 last_changed_at: (),
             },
@@ -64,7 +74,16 @@ pub async fn poll_oracles(
         let mut changes = Vec::new();
         for (oracle, prev) in oracles.iter_mut() {
             // Poll the oracle.
-            let new_price = oracle.fetch_price(&provider).await?;
+            let new_price = match oracle.fetch_price(&provider).await {
+                Ok(price) => price,
+                Err(e) => {
+                    error!(
+                        "Error while fetching price for oracle {}: {} -> {}: {e}",
+                        oracle.adapter, oracle.base_asset, oracle.quote_asset
+                    );
+                    continue;
+                }
+            };
 
             // Check if the price has changed.
             if prev.price != new_price {

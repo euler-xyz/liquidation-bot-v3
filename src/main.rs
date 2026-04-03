@@ -63,7 +63,10 @@ async fn main() {
         .await
         .unwrap();
 
-    info!("Found {} accounts", accounts_to_fetch.len());
+    info!(
+        "Found {} accounts, loading their assets and debts",
+        accounts_to_fetch.len()
+    );
 
     // For each account fetch all their positions in vaults.
     for account in accounts_to_fetch.iter().take(50) {
@@ -79,6 +82,8 @@ async fn main() {
             .unwrap(),
         );
     }
+
+    info!("All assets and debts have been loaded, start watching for changes.");
 
     let (account_events_sender, mut account_events_receiver) = mpsc::channel::<Address>(100);
     let account_provider = provider.clone();
@@ -121,9 +126,9 @@ async fn main() {
                     .filter(|solvency| solvency.is_unhealthy())
                     .collect();
 
-                if !a.is_empty() {
-                    info!("Oracle price changes has caused {} accounts to become unhealthy", a.len());
-                }
+                a.iter().for_each(|account| {
+                    info!("Account {} has become unhealthy, asset_value {}, debt {}, delta: {}", account.account, account.asset_value, account.debt_value, account.debt_value - account.asset_value);
+                });
             },
             // Track when an event happens on chain involving an account that potentially updates
             // its assets and debts, we (re)fetch the account and add it to our tracker.

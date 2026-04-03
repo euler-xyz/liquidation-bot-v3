@@ -17,10 +17,10 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct AccountSolvency {
-    account: Address,
-    asset_value: U256,
-    debt_value: U256,
-    accounted_in: Address,
+    pub account: Address,
+    pub asset_value: U256,
+    pub debt_value: U256,
+    pub accounted_in: Address,
 }
 
 sol! {
@@ -143,7 +143,7 @@ impl Account {
     pub fn calculate_health(&self, prices: &Prices) -> Result<AccountSolvency> {
         let debt = match self.debt.first() {
             Some(debt) => debt,
-            None => bail!("An account with no debt does not have an health score."),
+            None => bail!("An account with no debt does not have a health score."),
         };
 
         let debt_value = prices.get_quote(

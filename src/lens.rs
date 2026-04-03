@@ -1,16 +1,10 @@
 use anyhow::Result;
-use std::{error::Error, sync::Arc};
 
-use alloy::{
-    primitives::{Address, U256},
-    providers::DynProvider,
-    sol,
-    sol_types::ContractError,
-};
+use alloy::{primitives::Address, providers::DynProvider, sol};
 
 use crate::{
     Vaults,
-    types::{Account, Vault, VaultAssetPosition, VaultDebtPosition},
+    types::{Account, VaultAssetPosition, VaultDebtPosition},
 };
 
 sol! {

@@ -35,16 +35,19 @@ impl AccountsTracker {
 
     pub fn add(&mut self, account: Account) {
         // Skip accounts that have no debt, these are not of interest to us.
+        // TODO: Check if we are already tracking this account and this was intended as an update,
+        // if so we remove the account.
         if account.debt.is_empty() {
             return;
         }
 
+        // TODO: track if this is a new oracle we have not seen before, so we can start tracking its
+        // price.
         account.dependent_on().iter().for_each(|o| {
             let od = self.oracle_dependents.entry(o.clone()).or_default();
             od.push(account.address);
         });
 
-        // TODO: handle the case where we (accidentally?) replace an existing accounting.
         let _ = self.accounts.insert(account.address, account);
     }
 
