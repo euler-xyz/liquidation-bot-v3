@@ -45,7 +45,13 @@ pub async fn watch_chain_for_accounts(
     mut from_block: u64,
 ) {
     loop {
-        let latest = provider.get_block_number().await.unwrap();
+        let latest = match provider.get_block_number().await {
+            Ok(latest) => latest,
+            Err(err) => {
+                // TODO: Log error
+                continue;
+            }
+        };
 
         if latest >= from_block {
             let filter = Filter::new()
@@ -54,7 +60,13 @@ pub async fn watch_chain_for_accounts(
                 .to_block(latest)
                 .event_signature(Events::AccountStatusCheck::SIGNATURE_HASH);
 
-            let logs: Vec<Log> = provider.get_logs(&filter).await.unwrap();
+            let logs: Vec<Log> = match provider.get_logs(&filter).await {
+                Ok(logs) => logs,
+                Err(err) => {
+                    // TODO: log error.
+                    continue;
+                }
+            };
 
             for log in &logs {
                 match Events::AccountStatusCheck::decode_log(&log.inner) {

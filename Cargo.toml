@@ -13,3 +13,4 @@ gql_client = "1.1.0"
 alloy = { version = "1.8.2", features = ["full", "getrandom"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 itertools = "0.14.0"
+backon = { version = "1.6.0", features = ["tokio"]}
