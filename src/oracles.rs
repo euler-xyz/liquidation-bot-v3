@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use alloy::{primitives::U256, providers::DynProvider, sol};
 use anyhow::Result;
 use tokio::sync::mpsc::Sender;
+use tracing::{debug, info};
 
 use crate::{oracles, types::OracleIdentifier};
 
@@ -58,6 +59,7 @@ pub async fn poll_oracles(
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+        info!("Checking {} oracles for price changes", oracles.len());
 
         let mut changes = Vec::new();
         for (oracle, prev) in oracles.iter_mut() {
@@ -66,6 +68,15 @@ pub async fn poll_oracles(
 
             // Check if the price has changed.
             if prev.price != new_price {
+                debug!(
+                    old_price =? prev.price,
+                    new_price =? new_price,
+                    "Oracle {}: {} -> {} its price has updated",
+                    oracle.adapter,
+                    oracle.base_asset,
+                    oracle.quote_asset
+                );
+
                 // Update out store.
                 prev.price = new_price;
 

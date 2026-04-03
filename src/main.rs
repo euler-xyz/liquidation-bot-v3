@@ -7,6 +7,7 @@ use alloy::{
 use itertools::Itertools;
 use reqwest::Url;
 use tokio::sync::mpsc::{self};
+use tracing::info;
 
 use crate::{
     account::watch_chain_for_accounts,
@@ -35,6 +36,9 @@ mod vaults;
 
 #[tokio::main]
 async fn main() {
+    // Configure tracing.
+    tracing_subscriber::fmt::init();
+
     // Load the bot configuration.
     let config = get_config().expect("Could not load the configuration for the bot");
 
@@ -54,9 +58,12 @@ async fn main() {
         .unwrap();
 
     // Fetch all accounts that have debt.
+    info!("Fetching accounts with debt at block {}", starting_block);
     let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url, starting_block)
         .await
         .unwrap();
+
+    info!("Found {} accounts", accounts_to_fetch.len());
 
     // For each account fetch all their positions in vaults.
     for account in accounts_to_fetch.iter().take(50) {
@@ -105,7 +112,7 @@ async fn main() {
                     oracle_updates.iter().map(|oc| oc.oracle.clone()).collect(),
                 );
 
-                dbg!(accounts_affected.len());
+                info!("Oracle price updates have occured that affect {} accounts", accounts_affected.len());
 
                 let a: Vec<_> = accounts_affected
                     .iter()
@@ -114,7 +121,9 @@ async fn main() {
                     .filter(|solvency| solvency.is_unhealthy())
                     .collect();
 
-                dbg!(a);
+                if !a.is_empty() {
+                    info!("Oracle price changes has caused {} accounts to become unhealthy", a.len());
+                }
             },
             // Track when an event happens on chain involving an account that potentially updates
             // its assets and debts, we (re)fetch the account and add it to our tracker.
@@ -133,16 +142,10 @@ async fn main() {
                 // Track its (new) state.
                 accounts.add(account);
 
-                dbg!("Received account event, tracking account", account_event);
+                info!("Received account event, now tracking account {}", account_event);
             },
         }
     }
-
-    // dbg!(accounts.get_impacted_accounts(&OracleIdentifier {
-    //     base_asset: address!("0x4200000000000000000000000000000000000006"),
-    //     quote_asset: address!("0x0000000000000000000000000000000000000348"),
-    //     adapter: address!("0x6e183458600e66047a0f4d356d9daa480da1ca59")
-    // }));
 }
 
 pub async fn fetch_list_of_accounts(url: Url, at_block: u64) -> Result<Vec<Address>> {
@@ -226,7 +229,6 @@ pub async fn fetch_all_accounts(
             }
 
             if balance.balance > U256::ZERO {
-                dbg!("found assets");
                 assets.push(VaultAssetPosition {
                     amount: balance.balance,
                     vault: vaults.get_or_fetch(provider, balance.vault).await?,

@@ -8,6 +8,7 @@ use alloy::{
 use anyhow::{Result, bail};
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, time};
+use tracing::{error, info};
 
 use crate::{
     prices::Prices,
@@ -48,7 +49,8 @@ pub async fn watch_chain_for_accounts(
         let latest = match provider.get_block_number().await {
             Ok(latest) => latest,
             Err(err) => {
-                // TODO: Log error
+                error!("Error while fetching the current block number: {err}");
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
         };
@@ -63,7 +65,11 @@ pub async fn watch_chain_for_accounts(
             let logs: Vec<Log> = match provider.get_logs(&filter).await {
                 Ok(logs) => logs,
                 Err(err) => {
-                    // TODO: log error.
+                    error!(
+                        "Error while fetching logs from block range {}-{}: {err}",
+                        from_block, latest
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
             };
@@ -72,10 +78,13 @@ pub async fn watch_chain_for_accounts(
                 match Events::AccountStatusCheck::decode_log(&log.inner) {
                     Ok(decoded) => {
                         let block = log.block_number.unwrap_or_default();
-                        println!("Block {block} | Account: {}", decoded.account);
+                        info!(
+                            "Found account event for {} at block {}",
+                            decoded.account, block
+                        );
                         account_update_channel.send(decoded.account).await.unwrap();
                     }
-                    Err(e) => eprintln!("Decode error: {e}"),
+                    Err(e) => error!("Decode error: {e}"),
                 }
             }
 
