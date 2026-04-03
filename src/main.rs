@@ -9,6 +9,7 @@ use reqwest::Url;
 use tokio::sync::mpsc::{self};
 
 use crate::{
+    account::watch_chain_for_accounts,
     accounts::AccountsTracker,
     config::get_config,
     lens::fetch_account,
@@ -46,8 +47,16 @@ async fn main() {
     let mut accounts = AccountsTracker::new();
     let mut prices = Prices::new();
 
+    // Fetch the latest indexed block.
+    let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
+        .await
+        .map_err(|e| anyhow!("Couldn't fetch the latest indexed block from the subgraph"))
+        .unwrap();
+
     // Fetch all accounts that have debt.
-    let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url).await.unwrap();
+    let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url, starting_block)
+        .await
+        .unwrap();
 
     // For each account fetch all their positions in vaults.
     for account in accounts_to_fetch.iter().take(50) {
@@ -64,37 +73,68 @@ async fn main() {
         );
     }
 
-    let (s, mut r) = mpsc::channel::<Vec<OracleChange>>(100);
-
-    let initial_oracles = accounts.get_oracle_identifiers();
+    let (account_events_sender, mut account_events_receiver) = mpsc::channel::<Address>(100);
+    let account_provider = provider.clone();
     tokio::spawn(async move {
-        poll_oracles(provider.erased(), initial_oracles, s)
+        watch_chain_for_accounts(
+            account_provider.erased(),
+            config.evc_address,
+            account_events_sender,
+            starting_block,
+        )
+        .await
+    });
+
+    let (oracles_sender, mut oracles_receiver) = mpsc::channel::<Vec<OracleChange>>(100);
+    let initial_oracles = accounts.get_oracle_identifiers();
+    let oracle_provider = provider.clone();
+    tokio::spawn(async move {
+        poll_oracles(oracle_provider.erased(), initial_oracles, oracles_sender)
             .await
             .unwrap();
     });
 
     loop {
-        if let Some(oracle_updates) = r.recv().await {
-            // Update our prices with the new ones.
-            prices.update_bulk(oracle_updates.clone());
+        tokio::select! {
+            Some(oracle_updates) = oracles_receiver.recv() => {
+                // Update our prices with the new ones.
+                prices.update_bulk(oracle_updates.clone());
 
-            // Figure out what accounts are affected by this change.
-            let accounts_affected = accounts.get_bulk_impacted_accounts(
-                oracle_updates.iter().map(|oc| oc.oracle.clone()).collect(),
-            );
+                // Figure out what accounts are affected by this change.
+                let accounts_affected = accounts.get_bulk_impacted_accounts(
+                    oracle_updates.iter().map(|oc| oc.oracle.clone()).collect(),
+                );
 
-            dbg!(accounts_affected.len());
+                dbg!(accounts_affected.len());
 
-            let a: Vec<_> = accounts_affected
-                .iter()
-                // NOTE: Errors regarding missing oracles get hidden here by the `.ok()`
-                .flat_map(|a| a.calculate_health(&prices).ok())
-                .filter(|solvency| solvency.is_unhealthy())
-                .collect();
+                let a: Vec<_> = accounts_affected
+                    .iter()
+                    // NOTE: Errors regarding missing oracles get hidden here by the `.ok()`
+                    .flat_map(|a| a.calculate_health(&prices).ok())
+                    .filter(|solvency| solvency.is_unhealthy())
+                    .collect();
 
-            dbg!(a);
+                dbg!(a);
+            },
+            // Track when an event happens on chain involving an account that potentially updates
+            // its assets and debts, we (re)fetch the account and add it to our tracker.
+            Some(account_event) = account_events_receiver.recv() => {
+                // Fetch the account.
+                let account = fetch_account(
+                    provider.clone().erased(),
+                    vaults,
+                    config.account_lens_address,
+                    config.evc_address,
+                    account_event,
+                )
+                    .await
+                    .unwrap();
 
-            // Calculate the asset and debt values.
+                // Track its (new) state.
+                accounts.add(account);
+
+                dbg!("Received account event, tracking account", account_event);
+            },
         }
     }
 
@@ -105,12 +145,7 @@ async fn main() {
     // }));
 }
 
-pub async fn fetch_list_of_accounts(url: Url) -> Result<Vec<Address>> {
-    // Fetch the latest indexed block.
-    let block = fetch_latest_indexed_block(url.clone())
-        .await
-        .map_err(|e| anyhow!("Couldn't fetch the latest indexed block from the subgraph"))?;
-
+pub async fn fetch_list_of_accounts(url: Url, at_block: u64) -> Result<Vec<Address>> {
     let mut rows = Vec::new();
     let mut last_id: FixedBytes<40> = FixedBytes::ZERO;
 
@@ -120,7 +155,7 @@ pub async fn fetch_list_of_accounts(url: Url) -> Result<Vec<Address>> {
             url.clone(),
             TrackingVaultBalancesArgs {
                 id_gt: last_id,
-                at_block: block,
+                at_block,
             },
         )
         .await

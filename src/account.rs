@@ -1,6 +1,13 @@
-use alloy::primitives::{Address, U256};
+use alloy::{
+    primitives::{Address, U256},
+    providers::{DynProvider, Provider},
+    rpc::types::{Filter, Log},
+    sol,
+    sol_types::SolEvent,
+};
 use anyhow::{Result, bail};
 use std::sync::Arc;
+use tokio::{sync::mpsc::Sender, time};
 
 use crate::{
     prices::Prices,
@@ -13,6 +20,60 @@ pub struct AccountSolvency {
     asset_value: U256,
     debt_value: U256,
     accounted_in: Address,
+}
+
+sol! {
+    /// @title Events
+    /// @custom:security-contact security@euler.xyz
+    /// @author Euler Labs (https://www.eulerlabs.com/)
+    /// @notice This contract implements the events for the Ethereum Vault Connector.
+    #[sol(rpc)]
+    contract Events {
+        /// @notice Emitted when an account status check is performed.
+        /// @param account The account for which the status check is performed.
+        /// @param controller The controller performing the status check.
+        event AccountStatusCheck(address indexed account, address indexed controller);
+    }
+
+}
+
+/// Watches the chain for account update events
+pub async fn watch_chain_for_accounts(
+    provider: DynProvider,
+    evc: Address,
+    account_update_channel: Sender<Address>,
+    mut from_block: u64,
+) {
+    loop {
+        let latest = provider.get_block_number().await.unwrap();
+
+        if latest >= from_block {
+            let filter = Filter::new()
+                .address(evc)
+                .from_block(from_block)
+                .to_block(latest)
+                .event_signature(Events::AccountStatusCheck::SIGNATURE_HASH);
+
+            let logs: Vec<Log> = provider.get_logs(&filter).await.unwrap();
+
+            for log in &logs {
+                match Events::AccountStatusCheck::decode_log(&log.inner) {
+                    Ok(decoded) => {
+                        let block = log.block_number.unwrap_or_default();
+                        println!("Block {block} | Account: {}", decoded.account);
+                        account_update_channel.send(decoded.account).await.unwrap();
+                    }
+                    Err(e) => eprintln!("Decode error: {e}"),
+                }
+            }
+
+            // Advance past the range we just queried
+            from_block = latest + 1;
+        }
+
+        // TODO: Make duration configurable, perhaps also an option to watch for new block events.
+        time::sleep(tokio::time::Duration::from_secs(15)).await;
+    }
 }
 
 impl AccountSolvency {

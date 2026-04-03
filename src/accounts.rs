@@ -34,6 +34,11 @@ impl AccountsTracker {
     }
 
     pub fn add(&mut self, account: Account) {
+        // Skip accounts that have no debt, these are not of interest to us.
+        if account.debt.is_empty() {
+            return;
+        }
+
         account.dependent_on().iter().for_each(|o| {
             let od = self.oracle_dependents.entry(o.clone()).or_default();
             od.push(account.address);
