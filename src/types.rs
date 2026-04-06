@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use alloy::primitives::{Address, U256};
 
@@ -10,6 +10,13 @@ pub struct Vault {
     pub borrow_interest_rate: (),
     pub supply_interest_rate: (),
     pub adapter: Address,
+    pub ltvs: HashMap<Address, LTV>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LTV {
+    pub asset: Address,
+    pub liquidation: U256,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -68,6 +75,7 @@ impl Vault {
             borrow_interest_rate: (),
             supply_interest_rate: (),
             adapter: Address::random(),
+            ltvs: HashMap::new(),
         }
     }
 }
