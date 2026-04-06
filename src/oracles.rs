@@ -2,7 +2,7 @@ use std::{collections::HashMap, default};
 
 use alloy::{
     dyn_abi::SolType,
-    primitives::{Address, Bytes, U256},
+    primitives::{Address, Bytes, FixedBytes, U256},
     providers::DynProvider,
     sol,
 };
@@ -253,8 +253,10 @@ impl Oracle {
                 }
             }
             "PythOracle" => {
-                // Decode and figure out PythId.
-                OracleType::PythPush
+                let pyth_data = PythOracleInfo::abi_decode(&oracle_info)?;
+                OracleType::Pyth {
+                    id: pyth_data.feedId,
+                }
             }
 
             _ => OracleType::Generic,
@@ -278,7 +280,9 @@ pub struct Oracle {
 #[derive(Debug, Default)]
 pub enum OracleType {
     // This is a pyth push oracle, it requires us to update the price onchain.
-    PythPush,
+    Pyth {
+        id: FixedBytes<32>,
+    },
 
     // This uses two other oracles.
     CrossAdapter {
@@ -298,7 +302,7 @@ mod test {
         providers::{Provider, ProviderBuilder},
     };
 
-    use crate::types::OracleIdentifier;
+    use crate::{oracles::OracleType, types::OracleIdentifier};
 
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
     const MAINNET_ORACLE_LENS: Address = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
@@ -306,15 +310,23 @@ mod test {
     #[tokio::test]
     async fn identify_pyth_oracle() {
         let oracle = OracleIdentifier {
-            base_asset: address!("0x6c3ea9036406852006290770BEdFcAbA0e23A0e8"),
+            base_asset: address!("0x96F6eF951840721AdBF46Ac996b59E0235CB985C"),
             quote_asset: address!("0x0000000000000000000000000000000000000348"),
-            adapter: address!("0xd0A8059bd1CF96C59c84A51FDF684e237Ee43957"),
+            adapter: address!("0xfe3ED784f0244B24Df186e576313d682f6Ee9865"),
         };
 
         let provider = ProviderBuilder::new()
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
 
-        dbg!(oracle.resolve(&provider, MAINNET_ORACLE_LENS).await);
+        let result = oracle
+            .resolve(&provider, MAINNET_ORACLE_LENS)
+            .await
+            .unwrap();
+
+        if let OracleType::Pyth { .. } = result.oracle_type {
+        } else {
+            panic!("Result is not a Pyth oracle");
+        }
     }
 }

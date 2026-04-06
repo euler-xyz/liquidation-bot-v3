@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, U256},
+    primitives::{Address, U256, address},
     providers::{DynProvider, Provider},
     rpc::types::{Filter, Log},
     sol,
@@ -36,6 +36,20 @@ sol! {
         event AccountStatusCheck(address indexed account, address indexed controller);
     }
 
+    #[sol(rpc)]
+    interface ILiquidation {
+        /// @notice Checks to see if a liquidation would be profitable, without actually doing anything
+        /// @param liquidator Address that will initiate the liquidation
+        /// @param violator Address that may be in collateral violation
+        /// @param collateral Collateral which is to be seized
+        /// @return maxRepay Max amount of debt that can be repaid, in asset units
+        /// @return maxYield Yield in collateral corresponding to max allowed amount of debt to be repaid, in collateral
+        /// balance (shares for vaults)
+        function checkLiquidation(address liquidator, address violator, address collateral)
+            external
+            view
+            returns (uint256 maxRepay, uint256 maxYield);
+    }
 }
 
 /// Watches the chain for account update events
@@ -97,6 +111,25 @@ pub async fn watch_chain_for_accounts(
     }
 }
 
+pub async fn liquidate_account(provider: &DynProvider, account: Account) -> Result<()> {
+    // Simulate the liquidation to calculate the potential profit.
+    let vault = ILiquidation::new(account.debt.first().unwrap().vault.address, provider);
+
+    // TODO: Currently hardcoded value for Mainnet!
+    let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+
+    for asset in account.assets.iter() {
+        let result = vault
+            .checkLiquidation(liquidator_address, account.address, asset.vault.address)
+            .call()
+            .await?;
+
+        dbg!(asset.vault.asset, result.maxRepay, result.maxYield);
+    }
+
+    Ok(())
+}
+
 impl AccountSolvency {
     pub fn is_unhealthy(&self) -> bool {
         self.debt_value > self.asset_value
@@ -155,6 +188,7 @@ impl Account {
             debt.amount,
         )?;
 
+        // TODO: Incorporate the LiquidationLTV into the below calculation.
         let total_assets = self
             .assets
             .iter()
@@ -179,5 +213,42 @@ impl Account {
             debt_value,
             accounted_in: debt.vault.unit_of_account,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use alloy::{
+        primitives::{Address, address},
+        providers::{Provider, ProviderBuilder},
+    };
+
+    use crate::{account::liquidate_account, lens::fetch_account, vaults::Vaults};
+
+    const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
+
+    #[tokio::test]
+    async fn test_liquidate_account() {
+        let provider = ProviderBuilder::new()
+            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
+            .erased();
+
+        // Our singleton vault store.
+        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+
+        let account = address!("0x819Ce254a22fF820765C85f07503F24268371E9e");
+
+        // Fetch an account.
+        let account = fetch_account(
+            provider.clone(),
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            account,
+        )
+        .await
+        .unwrap();
+
+        liquidate_account(&provider, account).await.unwrap();
     }
 }
