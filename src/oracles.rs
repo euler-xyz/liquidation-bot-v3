@@ -1,7 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, default};
 
-use alloy::{primitives::U256, providers::DynProvider, sol};
-use anyhow::Result;
+use alloy::{
+    dyn_abi::SolType,
+    primitives::{Address, Bytes, U256},
+    providers::DynProvider,
+    sol,
+};
+use anyhow::{Result, anyhow};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info};
 
@@ -143,6 +148,51 @@ sol! {
             view
             returns (uint256 bidOutAmount, uint256 askOutAmount);
     }
+
+    #[sol(rpc)]
+    interface OracleLens {
+        function getOracleInfo(address oracleAddress, address[] memory bases, address[] memory quotes)
+            public
+            view
+            returns (OracleDetailedInfo memory);
+    }
+
+    struct OracleDetailedInfo {
+        address oracle;
+        string name;
+        bytes oracleInfo;
+    }
+
+    struct PythOracleInfo {
+        address pyth;
+        address base;
+        address quote;
+        bytes32 feedId;
+        uint256 maxStaleness;
+        uint256 maxConfWidth;
+    }
+
+    struct EulerRouterInfo {
+        address governor;
+        address fallbackOracle;
+        OracleDetailedInfo fallbackOracleInfo;
+        address[] bases;
+        address[] quotes;
+        address[][] resolvedAssets;
+        address[] resolvedOracles;
+        OracleDetailedInfo[] resolvedOraclesInfo;
+    }
+
+    struct CrossAdapterInfo {
+        address base;
+        address cross;
+        address quote;
+        address oracleBaseCross;
+        address oracleCrossQuote;
+        OracleDetailedInfo oracleBaseCrossInfo;
+        OracleDetailedInfo oracleCrossQuoteInfo;
+    }
+
 }
 
 impl OracleIdentifier {
@@ -155,5 +205,116 @@ impl OracleIdentifier {
             .await?;
 
         Ok(result)
+    }
+
+    // Figure out the type of oracle that this is.
+    pub async fn resolve(&self, provider: &DynProvider, lens: Address) -> Result<Oracle> {
+        // We use the OracleLens to get the type of oracle.
+        let lens = OracleLens::new(lens, provider);
+
+        let info = lens
+            .getOracleInfo(self.adapter, vec![self.base_asset], vec![self.quote_asset])
+            .call()
+            .await?;
+
+        Oracle::new(info.oracle, info.name, info.oracleInfo)
+    }
+}
+
+impl Oracle {
+    pub fn new(address: Address, name: String, oracle_info: Bytes) -> Result<Self> {
+        let oracle_type = match name.as_str() {
+            "EulerRouter" => {
+                // NOTE: since the `oracle_info` only every gets called for a single base_asset and
+                // quote_asset, we assume the EulerRouter will also only ever return a single
+                // oracle.
+                let router_info = EulerRouterInfo::abi_decode(&oracle_info)?;
+
+                let info = router_info.resolvedOraclesInfo.first().ok_or(anyhow!(
+                    "Euler router did not return any resolved oracles, this should never happen"
+                ))?;
+
+                return Oracle::new(info.oracle, info.name.clone(), info.oracleInfo.clone());
+            }
+            "CrossAdapter" => {
+                let cross_info = CrossAdapterInfo::abi_decode(&oracle_info)?;
+
+                OracleType::CrossAdapter {
+                    base: Box::new(Oracle::new(
+                        cross_info.oracleBaseCrossInfo.oracle,
+                        cross_info.oracleBaseCrossInfo.name,
+                        cross_info.oracleBaseCrossInfo.oracleInfo,
+                    )?),
+                    cross: Box::new(Oracle::new(
+                        cross_info.oracleCrossQuoteInfo.oracle,
+                        cross_info.oracleCrossQuoteInfo.name,
+                        cross_info.oracleCrossQuoteInfo.oracleInfo,
+                    )?),
+                }
+            }
+            "PythOracle" => {
+                // Decode and figure out PythId.
+                OracleType::PythPush
+            }
+
+            _ => OracleType::Generic,
+        };
+
+        Ok(Oracle {
+            name,
+            address,
+            oracle_type,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Oracle {
+    name: String,
+    address: Address,
+    oracle_type: OracleType,
+}
+
+#[derive(Debug, Default)]
+pub enum OracleType {
+    // This is a pyth push oracle, it requires us to update the price onchain.
+    PythPush,
+
+    // This uses two other oracles.
+    CrossAdapter {
+        base: Box<Oracle>,
+        cross: Box<Oracle>,
+    },
+
+    #[default]
+    /// This type means there is no special handling required for this oracle.
+    Generic,
+}
+
+#[cfg(test)]
+mod test {
+    use alloy::{
+        primitives::{Address, address},
+        providers::{Provider, ProviderBuilder},
+    };
+
+    use crate::types::OracleIdentifier;
+
+    const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
+    const MAINNET_ORACLE_LENS: Address = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
+
+    #[tokio::test]
+    async fn identify_pyth_oracle() {
+        let oracle = OracleIdentifier {
+            base_asset: address!("0x6c3ea9036406852006290770BEdFcAbA0e23A0e8"),
+            quote_asset: address!("0x0000000000000000000000000000000000000348"),
+            adapter: address!("0xd0A8059bd1CF96C59c84A51FDF684e237Ee43957"),
+        };
+
+        let provider = ProviderBuilder::new()
+            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
+            .erased();
+
+        dbg!(oracle.resolve(&provider, MAINNET_ORACLE_LENS).await);
     }
 }
