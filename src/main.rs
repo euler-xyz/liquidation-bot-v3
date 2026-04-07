@@ -31,7 +31,9 @@ mod lens;
 mod liquidation;
 mod oracles;
 mod prices;
+mod pyth;
 mod subgraph;
+mod swap;
 mod types;
 mod vaults;
 
