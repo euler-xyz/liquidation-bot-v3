@@ -83,7 +83,7 @@ impl AccountsTracker {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use alloy::primitives::{Address, U256};
 
@@ -116,6 +116,7 @@ mod test {
                         borrow_interest_rate: (),
                         supply_interest_rate: (),
                         adapter: oracle.adapter,
+                        ltvs: HashMap::new(),
                     }),
                 },
                 VaultAssetPosition::generate_random(),
@@ -129,6 +130,7 @@ mod test {
                     borrow_interest_rate: (),
                     supply_interest_rate: (),
                     adapter: oracle.adapter,
+                    ltvs: HashMap::new(),
                 }),
             }],
         );

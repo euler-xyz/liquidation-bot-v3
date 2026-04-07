@@ -1,4 +1,4 @@
-use std::{collections::HashMap, default};
+use std::{collections::HashMap, default, sync::Arc};
 
 use alloy::{
     dyn_abi::SolType,
@@ -7,10 +7,40 @@ use alloy::{
     sol,
 };
 use anyhow::{Result, anyhow};
+use dashmap::DashMap;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info};
 
 use crate::types::OracleIdentifier;
+
+#[derive(Debug, Clone)]
+pub struct OraclesCache {
+    lens: Address,
+    oracles: Arc<DashMap<OracleIdentifier, Oracle>>,
+}
+
+impl OraclesCache {
+    pub fn new(oracle_lens: Address) -> Self {
+        OraclesCache {
+            lens: oracle_lens,
+            oracles: Arc::new(DashMap::new()),
+        }
+    }
+
+    pub async fn fetch(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<Oracle> {
+        // Check if we have this id cached.
+        match self.oracles.get(&id) {
+            Some(oracle) => Ok(oracle.clone()),
+            None => {
+                // Resolve the identifier.
+                let oracle = id.resolve(provider, self.lens).await?;
+                // Store the result.
+                self.oracles.insert(id, oracle.clone());
+                Ok(oracle)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct OracleChange {
@@ -26,6 +56,7 @@ struct OracleOutput {
 
 pub async fn poll_oracles(
     provider: DynProvider,
+    cache: OraclesCache,
     initial_oracles: Vec<OracleIdentifier>,
     event_channel: Sender<Vec<OracleChange>>,
 ) -> Result<()> {
@@ -268,16 +299,30 @@ impl Oracle {
             oracle_type,
         })
     }
+
+    /// Returns all the pyth ids for this oracle.
+    pub fn pyth_ids(&self) -> Vec<FixedBytes<32>> {
+        dbg!(&self);
+        match self.oracle_type.clone() {
+            OracleType::Pyth { id } => {
+                vec![id]
+            }
+            OracleType::CrossAdapter { base, cross } => {
+                [base.pyth_ids(), cross.pyth_ids()].concat()
+            }
+            OracleType::Generic => vec![],
+        }
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Oracle {
     name: String,
     address: Address,
     oracle_type: OracleType,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum OracleType {
     // This is a pyth push oracle, it requires us to update the price onchain.
     Pyth {

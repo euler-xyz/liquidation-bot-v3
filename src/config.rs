@@ -12,6 +12,7 @@ pub struct Config {
     pub rpc_url: Url,
     pub subgraph_url: Url,
     pub evc_address: Address,
+    pub oracle_lens_address: Address,
     pub vault_lens_address: Address,
     pub account_lens_address: Address,
 }

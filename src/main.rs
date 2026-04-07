@@ -14,7 +14,7 @@ use crate::{
     accounts::AccountsTracker,
     config::get_config,
     lens::fetch_account,
-    oracles::{OracleChange, poll_oracles},
+    oracles::{OracleChange, OraclesCache, poll_oracles},
     prices::Prices,
     subgraph::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
@@ -28,6 +28,7 @@ mod account;
 mod accounts;
 mod config;
 mod lens;
+mod liquidation;
 mod oracles;
 mod prices;
 mod subgraph;
@@ -50,6 +51,7 @@ async fn main() {
 
     let mut accounts = AccountsTracker::new();
     let mut prices = Prices::new();
+    let mut oracles = OraclesCache::new(config.oracle_lens_address);
 
     // Fetch the latest indexed block.
     let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
@@ -101,9 +103,14 @@ async fn main() {
     let initial_oracles = accounts.get_oracle_identifiers();
     let oracle_provider = provider.clone();
     tokio::spawn(async move {
-        poll_oracles(oracle_provider.erased(), initial_oracles, oracles_sender)
-            .await
-            .unwrap();
+        poll_oracles(
+            oracle_provider.erased(),
+            oracles.clone(),
+            initial_oracles,
+            oracles_sender,
+        )
+        .await
+        .unwrap();
     });
 
     loop {

@@ -69,8 +69,8 @@ impl Vaults {
             None => {
                 // Fetch the vault and all its details.
                 let lens = VaultLens::new(self.vault_lens, provider);
-                // TODO: Replace this with the dynamic variant so we can also get the
-                // LiquidationLTV.
+                // TODO: Combine the below 2 calls into a single one, or perform them at the same
+                // time.
                 let info = lens
                     .getVaultInfoStatic(address)
                     .call()
