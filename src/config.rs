@@ -9,12 +9,16 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct Config {
+    pub chain_id: u64,
     pub rpc_url: Url,
     pub subgraph_url: Url,
     pub evc_address: Address,
+    pub pyth_address: Address,
+    pub wrapped_native_asset_address: Address,
     pub oracle_lens_address: Address,
     pub vault_lens_address: Address,
     pub account_lens_address: Address,
+    pub liquidator_address: Address,
 }
 
 pub fn get_config() -> Result<Config> {

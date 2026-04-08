@@ -6,7 +6,7 @@ use alloy::{
     providers::DynProvider,
     sol,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info};
@@ -33,7 +33,11 @@ impl OraclesCache {
             Some(oracle) => Ok(oracle.clone()),
             None => {
                 // Resolve the identifier.
-                let oracle = id.resolve(provider, self.lens).await?;
+                let oracle = id.resolve(provider, self.lens).await.context(format!(
+                    "While fetching adapter {} with base {} and quote {} using lens {}",
+                    id.adapter, id.base_asset, id.quote_asset, self.lens
+                ))?;
+
                 // Store the result.
                 self.oracles.insert(id, oracle.clone());
                 Ok(oracle)

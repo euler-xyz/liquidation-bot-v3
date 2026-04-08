@@ -55,6 +55,7 @@ pub struct PreparedLiquidation {
 /// Prepares a liquidation by calculating what the most profitable method is.
 pub async fn prepare_liquidation(
     provider: &DynProvider,
+    chain_id: u64,
     pyth: Option<PythFeedInput>,
     wrapped_native_asset_address: Address,
     liquidator_address: Address,
@@ -126,7 +127,7 @@ pub async fn prepare_liquidation(
                 let swap_result = get_swap_quote(
                     "https://swap.euler.finance",
                     &SwapParams {
-                        chain_id: "1".to_string(),
+                        chain_id: chain_id.to_string(),
                         token_in: asset.vault.asset,
                         token_out: debt.vault.asset,
                         receiver: liquidator_address,
@@ -189,7 +190,7 @@ pub async fn prepare_liquidation(
                 let profit_swap_result = get_swap_quote(
                     "https://swap.euler.finance",
                     &SwapParams {
-                        chain_id: "1".to_string(),
+                        chain_id: chain_id.to_string(),
                         token_in: debt.vault.asset,
                         token_out: wrapped_native_asset_address,
                         receiver: liquidator_address,
@@ -249,6 +250,7 @@ mod test {
         primitives::address,
         providers::{Provider, ProviderBuilder},
     };
+    use itertools::chain;
 
     use crate::{
         lens::fetch_account, liquidation::prepare_liquidation, oracles::OraclesCache,
@@ -314,6 +316,7 @@ mod test {
         dbg!(
             prepare_liquidation(
                 &provider,
+                1,
                 pyth,
                 wrapped_native_asset,
                 liquidator_address,
@@ -382,6 +385,7 @@ mod test {
 
         prepare_liquidation(
             &provider,
+            1,
             pyth,
             wrapped_native_asset,
             liquidator_address,

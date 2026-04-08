@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
+    rpc::types::error,
 };
 use itertools::Itertools;
 use reqwest::Url;
@@ -14,8 +15,10 @@ use crate::{
     accounts::AccountsTracker,
     config::get_config,
     lens::fetch_account,
+    liquidation::prepare_liquidation,
     oracles::{OracleChange, OraclesCache, poll_oracles},
     prices::Prices,
+    pyth::fetch_pyth_data,
     subgraph::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
     },
@@ -104,16 +107,19 @@ async fn main() {
     let (oracles_sender, mut oracles_receiver) = mpsc::channel::<Vec<OracleChange>>(100);
     let initial_oracles = accounts.get_oracle_identifiers();
     let oracle_provider = provider.clone();
-    tokio::spawn(async move {
-        poll_oracles(
-            oracle_provider.erased(),
-            oracles.clone(),
-            initial_oracles,
-            oracles_sender,
-        )
-        .await
-        .unwrap();
-    });
+    {
+        let oracles = oracles.clone();
+        tokio::spawn(async move {
+            poll_oracles(
+                oracle_provider.erased(),
+                oracles.clone(),
+                initial_oracles,
+                oracles_sender,
+            )
+            .await
+            .unwrap();
+        });
+    }
 
     loop {
         tokio::select! {
@@ -128,16 +134,66 @@ async fn main() {
 
                 info!("Oracle price updates have occured that affect {} accounts", accounts_affected.len());
 
-                let a: Vec<_> = accounts_affected
+                let unhealthy_accounts: Vec<_> = accounts_affected
                     .iter()
                     // NOTE: Errors regarding missing oracles get hidden here by the `.ok()`
-                    .flat_map(|a| a.calculate_health(&prices).ok())
-                    .filter(|solvency| solvency.is_unhealthy())
+                    .filter(|a| {
+                        match a.calculate_health(&prices) {
+                            Ok(health) => {
+                                health.is_unhealthy()
+                            },
+                            Err(err) => {
+                                tracing::error!("Error while checking account health: {}", err);
+                                false
+                            },
+                        }
+
+                    })
                     .collect();
 
-                a.iter().for_each(|account| {
-                    info!("Account {} has become unhealthy, asset_value {}, debt {}, delta: {}", account.account, account.asset_value, account.debt_value, account.debt_value - account.asset_value);
-                });
+                let provider = &provider.clone().erased();
+                for account in unhealthy_accounts.iter() {
+                    // First we check if any of the oracles this account makes use of are Pyth.
+                    // If so we need to fetch their most recent quotes.
+                    let mut pyth_ids = Vec::new();
+                    for oracle in account.dependent_on().iter() {
+                        let oracle_type = oracles
+                            .fetch(provider, oracle.clone())
+                            .await;
+
+                        let oracle_type = match oracle_type {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!("Issues with fetching oracle information, optimistically assuming this to not be a pyth oracle: {}", e);
+                                continue;
+                            }
+                        };
+
+                        oracle_type.pyth_ids()
+                            .iter()
+                            .for_each(|new_id| pyth_ids.push(*new_id));
+                        }
+
+                    // Fetch pyth data if needed.
+                    let pyth = match !pyth_ids.is_empty() {
+                        true => {
+                            // Call the Pyth API to fetch the most recent data for these oracles.
+                            Some(
+                                fetch_pyth_data(provider, config.pyth_address, pyth_ids)
+                                .await
+                                .unwrap(),
+                            )
+                        }
+                        false => None,
+                    };
+
+                    let liquidation = prepare_liquidation(provider, config.chain_id, pyth, config.wrapped_native_asset_address, config.liquidator_address, account.clone().clone()).await;
+                    dbg!(liquidation);
+                }
+
+                // a.iter().for_each(|account| {
+                //     info!("Account {} has become unhealthy, asset_value {}, debt {}, delta: {}", account.account, account.asset_value, account.debt_value, account.debt_value - account.asset_value);
+                // });
             },
             // Track when an event happens on chain involving an account that potentially updates
             // its assets and debts, we (re)fetch the account and add it to our tracker.
