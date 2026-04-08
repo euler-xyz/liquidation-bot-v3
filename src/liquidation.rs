@@ -1,9 +1,10 @@
 use std::{
     str::FromStr,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use alloy::{
+    network::TransactionBuilder,
     primitives::{Address, Bytes, U256, address},
     providers::DynProvider,
     sol,
@@ -17,8 +18,8 @@ use serde_json::Value;
 use crate::{
     account::ILiquidation,
     oracles::{self, OraclesCache},
-    pyth::fetch_pyth_data,
-    swap::{SwapParams, get_swap_quote},
+    pyth::{PythFeedInput, fetch_pyth_data},
+    swap::{SwapParams, SwapPayload, get_swap_quote},
     types::Account,
 };
 
@@ -38,36 +39,33 @@ sol! {
 
 }
 
-pub async fn liquidate_account(
+#[derive(Debug, Clone)]
+/// Contains all the data required to execute a liquidation.
+pub struct PreparedLiquidation {
+    // The account this liquidation is regarding.
+    account: Account,
+    // The pyth data that will be required to perform the liquidation.
+    pyth: Option<PythFeedInput>,
+    // The swap data required to convert the assets into debt.
+    swap: Option<SwapPayload>,
+    // The resulting profit from the liquidation.
+    profit: U256,
+}
+
+/// Prepares a liquidation by calculating what the most profitable method is.
+pub async fn prepare_liquidation(
     provider: &DynProvider,
-    oracles: OraclesCache,
-    pyth_address: Address,
+    pyth: Option<PythFeedInput>,
+    wrapped_native_asset_address: Address,
     liquidator_address: Address,
     account: Account,
-) -> Result<()> {
-    // First we check if any of the oracles this account makes use of are Pyth.
-    // If so we need to fetch their most recent quotes.
-    let mut pyth_ids = Vec::new();
-    for oracle in account.dependent_on().iter() {
-        oracles
-            .fetch(provider, oracle.clone())
-            .await?
-            .pyth_ids()
-            .iter()
-            .for_each(|new_id| pyth_ids.push(*new_id));
-    }
-
-    // Fetch pyth data if needed.
-    let pyth = match !pyth_ids.is_empty() {
-        true => {
-            // Call the Pyth API to fetch the most recent data for these oracles.
-            Some(fetch_pyth_data(provider, pyth_address, pyth_ids).await?)
-        }
-        false => None,
+) -> Result<Option<PreparedLiquidation>> {
+    let debt = match account.debt.first() {
+        Some(debt) => debt,
+        // We can't liquidate an account that does not have any debt.
+        None => return Ok(None),
     };
 
-    // Simulate the liquidation to calculate the potential profit.
-    let debt = account.debt.first().unwrap();
     let vault_address = debt.vault.address;
     let vault = ILiquidation::new(vault_address, provider);
 
@@ -76,6 +74,7 @@ pub async fn liquidate_account(
         .duration_since(UNIX_EPOCH)
         .expect("time should go forward");
 
+    let mut prepared_liquidation: Option<PreparedLiquidation> = None;
     for asset in account.assets.iter() {
         // Calculate the result of the liquidation.
         let (max_repay, max_yield) = match pyth.clone() {
@@ -107,6 +106,7 @@ pub async fn liquidate_account(
             }
         };
 
+        dbg!(max_repay, max_yield);
         if max_repay.is_zero() || max_yield.is_zero() {
             continue;
         }
@@ -114,42 +114,133 @@ pub async fn liquidate_account(
         let vault = Vault::new(asset.vault.address, provider);
         let max_assets = vault.convertToAssets(max_yield).call().await?;
 
-        // Have the swap api calculate attempt to convert the colleteral to the debt.
-        let swap_result = get_swap_quote(
-            "https://swap.euler.finance",
-            &SwapParams {
-                chain_id: "1".to_string(),
-                token_in: asset.vault.asset,
-                token_out: debt.vault.asset,
-                receiver: liquidator_address,
-                vault_in: asset.vault.address,
-                // TODO: this should be the signer address
-                origin: liquidator_address,
-                account_in: liquidator_address,
-                account_out: liquidator_address,
-                amount: max_assets,
-                target_debt: U256::ZERO,
-                current_debt: max_repay,
-                swapper_mode: "0".to_string(),
-                slippage: "0.5".to_string(),
-                deadline: since_the_epoch.as_secs().to_string(),
-                is_repay: "false".to_string(),
-                dust_account: None,
-                unused_input_receiver: None,
-                transfer_output_to_receiver: None,
-                skip_sweep_deposit_out: None,
-                routing_override: None,
-                provider: None,
-            },
-        )
-        .await?;
+        dbg!("max assets", max_assets);
 
-        dbg!(swap_result);
+        let (amount_out, swap_data) = match debt.vault.asset == asset.vault.asset {
+            true => {
+                // Assets are already the same, no need to swap.
+                (max_assets, None)
+            }
+            false => {
+                // Have the swap api calculate attempt to convert the colleteral to the debt.
+                let swap_result = get_swap_quote(
+                    "https://swap.euler.finance",
+                    &SwapParams {
+                        chain_id: "1".to_string(),
+                        token_in: asset.vault.asset,
+                        token_out: debt.vault.asset,
+                        receiver: liquidator_address,
+                        vault_in: asset.vault.address,
+                        // TODO: this should be the signer address
+                        origin: liquidator_address,
+                        account_in: liquidator_address,
+                        account_out: liquidator_address,
+                        amount: max_assets,
+                        target_debt: U256::ZERO,
+                        current_debt: max_repay,
+                        swapper_mode: "0".to_string(),
+                        slippage: "0.5".to_string(),
+                        // Deadline of 5 minutes into the future.
+                        deadline: since_the_epoch
+                            .saturating_add(Duration::from_mins(5))
+                            .as_secs()
+                            .to_string(),
+                        is_repay: "false".to_string(),
+                        dust_account: None,
+                        unused_input_receiver: None,
+                        transfer_output_to_receiver: None,
+                        skip_sweep_deposit_out: Some("true".to_string()),
+                        routing_override: None,
+                        provider: None,
+                    },
+                )
+                .await?;
 
-        dbg!(asset.vault.asset, max_repay, max_yield, max_assets);
+                // If the result did not contain a quote then we continue.
+                let swap_result = match swap_result.data {
+                    Some(data) => data,
+                    None => {
+                        dbg!("no swap result");
+                        dbg!(swap_result);
+                        continue;
+                    }
+                };
+
+                (swap_result.amount_out, Some(swap_result.swap))
+            }
+        };
+
+        dbg!("got the swap result", amount_out);
+
+        // Check that the resulting amount is more than the price of the debt.
+        if amount_out < max_repay {
+            dbg!("negative result", max_repay);
+            continue;
+        }
+
+        let profit = amount_out - max_repay;
+
+        // If the profit after repaying is in an asset other thatn the native asset then we convert
+        // to it to figure out how much of a profit this is making.
+        let profit = match debt.vault.asset == wrapped_native_asset_address {
+            true => profit,
+            false => {
+                // Have the swap api calculate attempt to convert the colleteral to the debt.
+                let profit_swap_result = get_swap_quote(
+                    "https://swap.euler.finance",
+                    &SwapParams {
+                        chain_id: "1".to_string(),
+                        token_in: debt.vault.asset,
+                        token_out: wrapped_native_asset_address,
+                        receiver: liquidator_address,
+                        vault_in: debt.vault.address,
+                        // TODO: this should be the signer address
+                        origin: liquidator_address,
+                        account_in: liquidator_address,
+                        account_out: liquidator_address,
+                        amount: profit,
+                        target_debt: U256::ZERO,
+                        current_debt: U256::ZERO,
+                        swapper_mode: "0".to_string(),
+                        slippage: "0.5".to_string(),
+                        // Deadline of 5 minutes into the future.
+                        deadline: since_the_epoch
+                            .saturating_add(Duration::from_mins(5))
+                            .as_secs()
+                            .to_string(),
+                        is_repay: "false".to_string(),
+                        dust_account: None,
+                        unused_input_receiver: None,
+                        transfer_output_to_receiver: None,
+                        skip_sweep_deposit_out: Some("true".to_string()),
+                        routing_override: None,
+                        provider: None,
+                    },
+                )
+                .await?;
+                profit_swap_result.data.unwrap().amount_out
+            }
+        };
+
+        dbg!("Profit found of ", profit);
+
+        // Check if the profit from this would be higher than what we have previously found.
+        if let Some(prepared) = &prepared_liquidation
+            && prepared.profit > profit
+        {
+            continue;
+        }
+
+        // The profit will be higher so we store this as the best option.
+        prepared_liquidation = Some(PreparedLiquidation {
+            profit,
+            account: account.clone(),
+            pyth: pyth.clone(),
+            swap: swap_data,
+        });
     }
 
-    Ok(())
+    Ok(prepared_liquidation)
 }
 
 #[cfg(test)]
@@ -160,7 +251,8 @@ mod test {
     };
 
     use crate::{
-        lens::fetch_account, liquidation::liquidate_account, oracles::OraclesCache, vaults::Vaults,
+        lens::fetch_account, liquidation::prepare_liquidation, oracles::OraclesCache,
+        pyth::fetch_pyth_data, vaults::Vaults,
     };
 
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
@@ -171,6 +263,7 @@ mod test {
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
 
+        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
         let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
 
@@ -178,7 +271,7 @@ mod test {
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
         let oracles = OraclesCache::new(oracle_lens);
 
-        let account = address!("0x819Ce254a22fF820765C85f07503F24268371E9e");
+        let account = address!("0x68e9669391AD60B5D72B996a9bd523c3962D2883");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
 
         // Fetch an account.
@@ -192,15 +285,43 @@ mod test {
         .await
         .unwrap();
 
-        liquidate_account(
-            &provider,
-            oracles,
-            pyth_address,
-            liquidator_address,
-            account,
-        )
-        .await
-        .unwrap();
+        // First we check if any of the oracles this account makes use of are Pyth.
+        // If so we need to fetch their most recent quotes.
+        let mut pyth_ids = Vec::new();
+        for oracle in account.dependent_on().iter() {
+            oracles
+                .fetch(&provider, oracle.clone())
+                .await
+                .unwrap()
+                .pyth_ids()
+                .iter()
+                .for_each(|new_id| pyth_ids.push(*new_id));
+        }
+
+        // Fetch pyth data if needed.
+        let pyth = match !pyth_ids.is_empty() {
+            true => {
+                // Call the Pyth API to fetch the most recent data for these oracles.
+                Some(
+                    fetch_pyth_data(&provider, pyth_address, pyth_ids)
+                        .await
+                        .unwrap(),
+                )
+            }
+            false => None,
+        };
+
+        dbg!(
+            prepare_liquidation(
+                &provider,
+                pyth,
+                wrapped_native_asset,
+                liquidator_address,
+                account,
+            )
+            .await
+            .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -209,6 +330,7 @@ mod test {
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
 
+        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
         let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
 
@@ -232,10 +354,36 @@ mod test {
 
         dbg!(&account);
 
-        liquidate_account(
+        // First we check if any of the oracles this account makes use of are Pyth.
+        // If so we need to fetch their most recent quotes.
+        let mut pyth_ids = Vec::new();
+        for oracle in account.dependent_on().iter() {
+            oracles
+                .fetch(&provider, oracle.clone())
+                .await
+                .unwrap()
+                .pyth_ids()
+                .iter()
+                .for_each(|new_id| pyth_ids.push(*new_id));
+        }
+
+        // Fetch pyth data if needed.
+        let pyth = match !pyth_ids.is_empty() {
+            true => {
+                // Call the Pyth API to fetch the most recent data for these oracles.
+                Some(
+                    fetch_pyth_data(&provider, pyth_address, pyth_ids)
+                        .await
+                        .unwrap(),
+                )
+            }
+            false => None,
+        };
+
+        prepare_liquidation(
             &provider,
-            oracles,
-            pyth_address,
+            pyth,
+            wrapped_native_asset,
             liquidator_address,
             account,
         )

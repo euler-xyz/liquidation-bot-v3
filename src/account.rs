@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, U256, address},
+    primitives::{Address, FixedBytes, U256, address},
     providers::{DynProvider, Provider},
     rpc::types::{Filter, Log},
     sol,
