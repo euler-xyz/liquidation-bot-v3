@@ -76,7 +76,10 @@ impl Vaults {
                     .call()
                     .await
                     .with_context(|| {
-                        format!("Error while calling the VaultLens for vault {}", address)
+                        format!(
+                            "Error while calling the VaultLens for vault {} using lens {}",
+                            address, self.vault_lens
+                        )
                     })?;
 
                 let ltv_info = lens
@@ -84,7 +87,10 @@ impl Vaults {
                     .call()
                     .await
                     .with_context(|| {
-                        format!("Error while calling the VaultLens for vault {}", address)
+                        format!(
+                            "Error while calling the VaultLens for vault {} using lens {}",
+                            address, self.vault_lens
+                        )
                     })?;
 
                 let vault = Arc::from(Vault {

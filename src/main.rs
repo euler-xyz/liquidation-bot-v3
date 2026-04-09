@@ -316,3 +316,61 @@ pub async fn fetch_all_accounts(
     // Fetch the current block
     Ok(accounts)
 }
+
+#[cfg(test)]
+mod test {
+    use alloy::{
+        node_bindings::Anvil,
+        primitives::address,
+        providers::{Provider, ProviderBuilder},
+    };
+
+    use crate::{lens::fetch_account, liquidation::prepare_liquidation, vaults::Vaults};
+
+    #[tokio::test]
+    // The liquidation we are copying:
+    // https://etherscan.io/tx/0x42533f3be6999ddeba1c3672d70c91f879ee1568ed61085293f7ff41a874a9d8
+    async fn liquidation() {
+        let block = 24790465;
+        let violator = address!("0x65E30583c1939344d57bBCdf3A1Bbb28d41164f2");
+
+        // Network (mainnet) specific configuration.
+        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+
+        // Fork the network at the block where this liquidation was present.
+        let network = Anvil::new()
+            .fork("")
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        // Fetch the account.
+        let account = fetch_account(
+            provider.clone(),
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            violator,
+        )
+        .await
+        .unwrap();
+
+        // TODO: have a way to mock the swap api so we can always provide the same fixed reply.
+        prepare_liquidation(
+            &provider,
+            1,
+            None, // This liquidation does not use any pyth oracles.
+            wrapped_native_asset,
+            liquidator_address,
+            account,
+        )
+        .await
+        .unwrap();
+    }
+}

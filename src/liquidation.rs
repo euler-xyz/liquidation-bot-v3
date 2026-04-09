@@ -348,7 +348,7 @@ mod test {
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
 
     #[tokio::test]
-    async fn test_liquidate_account() {
+    async fn test_prepare_liquidation() {
         let provider = ProviderBuilder::new()
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
@@ -416,7 +416,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_liquidate_account_pyth() {
+    async fn test_prepare_liquidation_with_pyth() {
         let provider = ProviderBuilder::new()
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
