@@ -76,7 +76,7 @@ async fn main() {
     );
 
     // For each account fetch all their positions in vaults.
-    for account in accounts_to_fetch.iter().take(50) {
+    for account in accounts_to_fetch.iter() {
         accounts.add(
             fetch_account(
                 provider.clone().erased(),

@@ -1,6 +1,8 @@
 use alloy::primitives::{self, Address, Bytes, U256};
+use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 // TODO: Once we know what fields we need (and are nice to have for debugging) we should clean
 // these struct and remove unused fields.
@@ -48,7 +50,7 @@ pub struct SwapParams {
 pub struct SwapApiResponse {
     pub success: bool,
     pub message: Option<String>,
-    pub data: Option<SwapQuote>,
+    pub data: Option<Value>,
     pub status_code: u16,
 }
 
@@ -126,10 +128,7 @@ pub struct RouteStep {
     pub provider_name: String,
 }
 
-pub async fn get_swap_quote(
-    base_url: &str,
-    params: &SwapParams,
-) -> Result<SwapApiResponse, reqwest::Error> {
+pub async fn get_swap_quote(base_url: &str, params: &SwapParams) -> Result<Option<SwapQuote>> {
     let mut query: Vec<(&str, String)> = vec![
         ("chainId", params.chain_id.clone()),
         ("tokenIn", params.token_in.to_string()),
@@ -178,12 +177,20 @@ pub async fn get_swap_quote(
     let url =
         reqwest::Url::parse_with_params(format!("{}/swap", base_url).as_str(), &query).unwrap();
 
-    let resp = client
+    let response_body = client
         .get(url)
         .send()
         .await?
         .json::<SwapApiResponse>()
         .await?;
 
-    Ok(resp)
+    // Make sure that the response was a success before attempting to deserialize the swapquote.
+    if !response_body.success {
+        return Ok(None);
+    }
+
+    match response_body.data {
+        Some(data) => Ok(Some(serde_json::from_value(data)?)),
+        None => Ok(None),
+    }
 }

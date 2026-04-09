@@ -124,7 +124,8 @@ pub async fn prepare_liquidation(
             }
             false => {
                 // Have the swap api calculate attempt to convert the colleteral to the debt.
-                let swap_result = get_swap_quote(
+                // If the result did not contain a quote then we continue.
+                match get_swap_quote(
                     "https://swap.euler.finance",
                     &SwapParams {
                         chain_id: chain_id.to_string(),
@@ -155,19 +156,15 @@ pub async fn prepare_liquidation(
                         provider: None,
                     },
                 )
-                .await?;
-
-                // If the result did not contain a quote then we continue.
-                let swap_result = match swap_result.data {
-                    Some(data) => data,
-                    None => {
-                        dbg!("no swap result");
-                        dbg!(swap_result);
+                .await
+                {
+                    Ok(Some(quote)) => (quote.amount_out, Some(quote.swap)),
+                    Ok(None) => continue,
+                    Err(e) => {
+                        // TODO add tracing.
                         continue;
                     }
-                };
-
-                (swap_result.amount_out, Some(swap_result.swap))
+                }
             }
         };
 
@@ -187,7 +184,7 @@ pub async fn prepare_liquidation(
             true => profit,
             false => {
                 // Have the swap api calculate attempt to convert the colleteral to the debt.
-                let profit_swap_result = get_swap_quote(
+                match get_swap_quote(
                     "https://swap.euler.finance",
                     &SwapParams {
                         chain_id: chain_id.to_string(),
@@ -218,8 +215,18 @@ pub async fn prepare_liquidation(
                         provider: None,
                     },
                 )
-                .await?;
-                profit_swap_result.data.unwrap().amount_out
+                .await
+                {
+                    Ok(Some(quote)) => quote.amount_out,
+                    Ok(None) => {
+                        // TODO: add tracing.
+                        continue;
+                    }
+                    Err(e) => {
+                        // TODO: add tracing.
+                        continue;
+                    }
+                }
             }
         };
 
