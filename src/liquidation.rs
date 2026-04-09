@@ -7,7 +7,9 @@ use alloy::{
     network::TransactionBuilder,
     primitives::{Address, Bytes, U256, address},
     providers::DynProvider,
+    rpc::types::TransactionRequest,
     sol,
+    sol_types::{SolCall, SolValue},
 };
 use anyhow::Result;
 use anyhow::anyhow;
@@ -17,16 +19,30 @@ use serde_json::Value;
 
 use crate::{
     account::ILiquidation,
+    liquidation::Liquidator::LiquidatorCalls,
     oracles::{self, OraclesCache},
     pyth::{PythFeedInput, fetch_pyth_data},
     swap::{SwapParams, SwapPayload, get_swap_quote},
-    types::Account,
+    types::{Account, VaultAssetPosition, VaultDebtPosition},
 };
 
 sol! {
     #[sol(rpc)]
     contract Liquidator {
         function simulatePythUpdateAndCheckLiquidation(bytes[] calldata pythUpdateData, uint256 pythUpdateFee, address vaultAddress, address liquidatorAddress, address borrowerAddress, address collateralAddress) external payable returns (uint256 maxRepay, uint256 seizedCollateral);
+        function liquidateSingleCollateral(LiquidationParams calldata params, bytes[] calldata swapperData) external returns (bool success);
+        function liquidateSingleCollateralWithPythOracle(LiquidationParams calldata params, bytes[] calldata swapperData, bytes[] calldata pythUpdateData) external payable returns (bool success);
+    }
+
+    struct LiquidationParams {
+        address violatorAddress;
+        address vault;
+        address borrowedAsset;
+        address collateralVault;
+        address collateralAsset;
+        uint256 repayAmount;
+        uint256 seizedCollateralAmount;
+        address receiver;
     }
 
     #[sol(rpc)]
@@ -44,10 +60,20 @@ sol! {
 pub struct PreparedLiquidation {
     // The account this liquidation is regarding.
     account: Account,
+    // The debt thats being repaid.
+    debt: VaultDebtPosition,
+    // The asset that is being liquidated.
+    asset: VaultAssetPosition,
+    // The amount of debt that will be repaid.
+    repay_amount: U256,
+    // The amount of collateral being seized.
+    seized_collateral_amount: U256,
     // The pyth data that will be required to perform the liquidation.
     pyth: Option<PythFeedInput>,
     // The swap data required to convert the assets into debt.
     swap: Option<SwapPayload>,
+    // The liquidator contract being used.
+    liquidator: Address,
     // The resulting profit from the liquidation.
     profit: U256,
 }
@@ -241,14 +267,69 @@ pub async fn prepare_liquidation(
 
         // The profit will be higher so we store this as the best option.
         prepared_liquidation = Some(PreparedLiquidation {
-            profit,
             account: account.clone(),
+            debt: debt.clone(),
+            asset: asset.clone(),
+            repay_amount: max_repay,
+            // TODO: check if this should be denominated in assets or in shares (yield).
+            seized_collateral_amount: max_assets,
             pyth: pyth.clone(),
             swap: swap_data,
+            liquidator: liquidator_address,
+            profit,
         });
     }
 
     Ok(prepared_liquidation)
+}
+
+impl PreparedLiquidation {
+    /// Builds a transaction from a preparedLiquidation.
+    pub fn into_transaction(self, receiver: Address) -> TransactionRequest {
+        let params = LiquidationParams {
+            violatorAddress: self.account.address,
+            vault: self.debt.vault.address,
+            borrowedAsset: self.debt.vault.asset,
+            collateralVault: self.asset.vault.address,
+            collateralAsset: self.asset.vault.asset,
+            repayAmount: self.repay_amount,
+            seizedCollateralAmount: self.seized_collateral_amount,
+            receiver,
+        };
+
+        let swap_data: Vec<Bytes> = self
+            .swap
+            .map(|s| s.multicall_items)
+            .unwrap_or_default()
+            .iter()
+            .map(|mi| mi.data.clone())
+            .collect();
+
+        let (calldata, value) = match self.pyth {
+            Some(pyth) => (
+                Liquidator::liquidateSingleCollateralWithPythOracleCall {
+                    params,
+                    swapperData: swap_data,
+                    pythUpdateData: pyth.data,
+                }
+                .abi_encode(),
+                pyth.cost,
+            ),
+            None => (
+                Liquidator::liquidateSingleCollateralCall {
+                    params,
+                    swapperData: swap_data,
+                }
+                .abi_encode(),
+                U256::ZERO,
+            ),
+        };
+
+        TransactionRequest::default()
+            .with_to(self.liquidator)
+            .with_input(calldata)
+            .with_value(value)
+    }
 }
 
 #[cfg(test)]

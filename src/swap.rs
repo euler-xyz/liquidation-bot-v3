@@ -89,8 +89,8 @@ pub struct Token {
 #[serde(rename_all = "camelCase")]
 pub struct SwapPayload {
     pub swapper_address: Address,
-    pub swapper_data: primitives::Bytes,
-    // pub multicall_items: Vec<MulticallItem>,
+    // pub swapper_data: primitives::Bytes,
+    pub multicall_items: Vec<MulticallItem>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
