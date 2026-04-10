@@ -22,7 +22,7 @@ use crate::{
     liquidation::Liquidator::LiquidatorCalls,
     oracles::{self, OraclesCache},
     pyth::{PythFeedInput, fetch_pyth_data},
-    swap::{SwapParams, SwapPayload, get_swap_quote},
+    swap::{SwapParams, SwapPayload, SwapQuoteProvider},
     types::{Account, VaultAssetPosition, VaultDebtPosition},
 };
 
@@ -81,6 +81,7 @@ pub struct PreparedLiquidation {
 /// Prepares a liquidation by calculating what the most profitable method is.
 pub async fn prepare_liquidation(
     provider: &DynProvider,
+    swap_provider: &impl SwapQuoteProvider,
     chain_id: u64,
     pyth: Option<PythFeedInput>,
     wrapped_native_asset_address: Address,
@@ -151,9 +152,8 @@ pub async fn prepare_liquidation(
             false => {
                 // Have the swap api calculate attempt to convert the colleteral to the debt.
                 // If the result did not contain a quote then we continue.
-                match get_swap_quote(
-                    "https://swap.euler.finance",
-                    &SwapParams {
+                match swap_provider
+                    .get_swap_quote(&SwapParams {
                         chain_id: chain_id.to_string(),
                         token_in: asset.vault.asset,
                         token_out: debt.vault.asset,
@@ -180,9 +180,8 @@ pub async fn prepare_liquidation(
                         skip_sweep_deposit_out: Some("true".to_string()),
                         routing_override: None,
                         provider: None,
-                    },
-                )
-                .await
+                    })
+                    .await
                 {
                     Ok(Some(quote)) => (quote.amount_out, Some(quote.swap)),
                     Ok(None) => continue,
@@ -210,9 +209,8 @@ pub async fn prepare_liquidation(
             true => profit,
             false => {
                 // Have the swap api calculate attempt to convert the colleteral to the debt.
-                match get_swap_quote(
-                    "https://swap.euler.finance",
-                    &SwapParams {
+                match swap_provider
+                    .get_swap_quote(&SwapParams {
                         chain_id: chain_id.to_string(),
                         token_in: debt.vault.asset,
                         token_out: wrapped_native_asset_address,
@@ -239,9 +237,8 @@ pub async fn prepare_liquidation(
                         skip_sweep_deposit_out: Some("true".to_string()),
                         routing_override: None,
                         provider: None,
-                    },
-                )
-                .await
+                    })
+                    .await
                 {
                     Ok(Some(quote)) => quote.amount_out,
                     Ok(None) => {
@@ -342,7 +339,7 @@ mod test {
 
     use crate::{
         lens::fetch_account, liquidation::prepare_liquidation, oracles::OraclesCache,
-        pyth::fetch_pyth_data, vaults::Vaults,
+        pyth::fetch_pyth_data, swap::EulerSwapApi, vaults::Vaults,
     };
 
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
@@ -404,6 +401,7 @@ mod test {
         dbg!(
             prepare_liquidation(
                 &provider,
+                &EulerSwapApi::new("https://swap.euler.finance".to_string()),
                 1,
                 pyth,
                 wrapped_native_asset,
@@ -473,6 +471,7 @@ mod test {
 
         prepare_liquidation(
             &provider,
+            &EulerSwapApi::new("https://swap.euler.finance".to_string()),
             1,
             pyth,
             wrapped_native_asset,

@@ -12,6 +12,7 @@ pub struct Config {
     pub chain_id: u64,
     pub rpc_url: Url,
     pub subgraph_url: Url,
+    pub swap_url: Url,
     pub evc_address: Address,
     pub pyth_address: Address,
     pub wrapped_native_asset_address: Address,
