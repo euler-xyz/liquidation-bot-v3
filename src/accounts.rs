@@ -126,7 +126,7 @@ mod test {
                 vault: Arc::from(Vault {
                     address: Address::random(),
                     asset: Address::random(),
-                    unit_of_account: Address::random(),
+                    unit_of_account: oracle.quote_asset,
                     borrow_interest_rate: (),
                     supply_interest_rate: (),
                     adapter: oracle.adapter,

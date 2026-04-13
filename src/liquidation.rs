@@ -1,27 +1,18 @@
-use std::{
-    str::FromStr,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy::{
     network::TransactionBuilder,
-    primitives::{Address, Bytes, U256, address},
+    primitives::{Address, Bytes, U256},
     providers::DynProvider,
     rpc::types::TransactionRequest,
     sol,
-    sol_types::{SolCall, SolValue},
+    sol_types::SolCall,
 };
 use anyhow::Result;
-use anyhow::anyhow;
-use itertools::Itertools;
-use serde::Deserialize;
-use serde_json::Value;
 
 use crate::{
     account::ILiquidation,
-    liquidation::Liquidator::LiquidatorCalls,
-    oracles::{self, OraclesCache},
-    pyth::{PythFeedInput, fetch_pyth_data},
+    pyth::PythFeedInput,
     swap::{SwapParams, SwapPayload, SwapQuoteProvider},
     types::{Account, VaultAssetPosition, VaultDebtPosition},
 };
@@ -335,7 +326,6 @@ mod test {
         primitives::address,
         providers::{Provider, ProviderBuilder},
     };
-    use itertools::chain;
 
     use crate::{
         lens::fetch_account, liquidation::prepare_liquidation, oracles::OraclesCache,

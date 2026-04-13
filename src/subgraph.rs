@@ -123,9 +123,13 @@ mod test {
 
     #[tokio::test]
     async fn fetch_vault_balances() {
+        let latest_indexed_block = fetch_latest_indexed_block(Url::parse(ENDPOINT).unwrap())
+            .await
+            .unwrap();
+
         let args = TrackingVaultBalancesArgs {
             id_gt: FixedBytes::ZERO,
-            at_block: 43873296,
+            at_block: latest_indexed_block,
         };
 
         let balances = fetch_tracking_vault_balances(Url::parse(ENDPOINT).unwrap(), args)
