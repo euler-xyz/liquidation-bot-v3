@@ -7,15 +7,15 @@ use alloy::{
 };
 use itertools::Itertools;
 use reqwest::Url;
-use tokio::sync::mpsc::{self};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::info;
 
 use crate::{
     account::watch_chain_for_accounts,
     accounts::AccountsTracker,
-    config::get_config,
+    config::{Config, get_config},
     lens::fetch_account,
-    liquidation::prepare_liquidation,
+    liquidation::{PreparedLiquidation, prepare_liquidation},
     oracles::{OracleChange, OraclesCache, poll_oracles},
     prices::Prices,
     pyth::fetch_pyth_data,
@@ -38,6 +38,7 @@ mod prices;
 mod pyth;
 mod subgraph;
 mod swap;
+mod transactions;
 mod types;
 mod vaults;
 
@@ -50,14 +51,14 @@ async fn main() {
     let config = get_config().expect("Could not load the configuration for the bot");
 
     // Build the provider.
-    let provider = ProviderBuilder::new().connect_http(config.rpc_url);
+    let provider = ProviderBuilder::new().connect_http(config.rpc_url.clone());
 
     // Our singleton vault store.
-    let vaults = &mut Vaults::new(config.vault_lens_address);
+    let mut vaults = Vaults::new(config.vault_lens_address);
 
     let mut accounts = AccountsTracker::new();
-    let mut prices = Prices::new();
-    let mut oracles = OraclesCache::new(config.oracle_lens_address);
+    let prices = Prices::new();
+    let oracles = OraclesCache::new(config.oracle_lens_address);
 
     // Fetch the latest indexed block.
     let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
@@ -67,7 +68,7 @@ async fn main() {
 
     // Fetch all accounts that have debt.
     info!("Fetching accounts with debt at block {}", starting_block);
-    let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url, starting_block)
+    let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url.clone(), starting_block)
         .await
         .unwrap();
 
@@ -77,11 +78,11 @@ async fn main() {
     );
 
     // For each account fetch all their positions in vaults.
-    for account in accounts_to_fetch.iter() {
+    for account in accounts_to_fetch.iter().take(50) {
         accounts.add(
             fetch_account(
                 provider.clone().erased(),
-                vaults,
+                &mut vaults,
                 config.account_lens_address,
                 config.evc_address,
                 *account,
@@ -93,7 +94,7 @@ async fn main() {
 
     info!("All assets and debts have been loaded, start watching for changes.");
 
-    let (account_events_sender, mut account_events_receiver) = mpsc::channel::<Address>(100);
+    let (account_events_sender, account_events_receiver) = mpsc::channel::<Address>(100);
     let account_provider = provider.clone();
     tokio::spawn(async move {
         watch_chain_for_accounts(
@@ -105,7 +106,7 @@ async fn main() {
         .await
     });
 
-    let (oracles_sender, mut oracles_receiver) = mpsc::channel::<Vec<OracleChange>>(100);
+    let (oracles_sender, oracles_receiver) = mpsc::channel::<Vec<OracleChange>>(100);
     let initial_oracles = accounts.get_oracle_identifiers();
     let oracle_provider = provider.clone();
     {
@@ -122,9 +123,44 @@ async fn main() {
         });
     }
 
+    let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+
+    // TODO: Actually start the thread to execute liquidations, currently not doing this as logging
+    // is fine for now.
+
+    // Start the liquidation bot.
+    run(
+        config,
+        &provider.erased(),
+        accounts,
+        prices,
+        vaults,
+        oracles,
+        account_events_receiver,
+        oracles_receiver,
+        liquidation_sender,
+    )
+    .await;
+}
+
+/// This is the main loop of the liquidation bot.
+pub async fn run(
+    config: Config,
+    provider: &DynProvider,
+
+    mut accounts: AccountsTracker,
+    mut prices: Prices,
+    mut vaults: Vaults,
+    oracles: OraclesCache,
+
+    // Channels for communicating with the other threads.
+    mut account_update_channel: Receiver<Address>,
+    mut oracle_update_channel: Receiver<Vec<OracleChange>>,
+    liquidation_channel: Sender<PreparedLiquidation>,
+) {
     loop {
         tokio::select! {
-            Some(oracle_updates) = oracles_receiver.recv() => {
+            Some(oracle_updates) = oracle_update_channel.recv() => {
                 // Update our prices with the new ones.
                 prices.update_bulk(oracle_updates.clone());
 
@@ -189,20 +225,20 @@ async fn main() {
                     };
 
                     let liquidation = prepare_liquidation(provider, &EulerSwapApi::new(config.swap_url.clone().into()), config.chain_id, pyth, config.wrapped_native_asset_address, config.liquidator_address, account.clone().clone()).await;
-                    dbg!(liquidation);
-                }
 
-                // a.iter().for_each(|account| {
-                //     info!("Account {} has become unhealthy, asset_value {}, debt {}, delta: {}", account.account, account.asset_value, account.debt_value, account.debt_value - account.asset_value);
-                // });
+                    // TODO: log the error case.
+                    if let Ok(Some(liquidation)) = liquidation {
+                        _ = liquidation_channel.send(liquidation).await;
+                    }
+                }
             },
             // Track when an event happens on chain involving an account that potentially updates
             // its assets and debts, we (re)fetch the account and add it to our tracker.
-            Some(account_event) = account_events_receiver.recv() => {
+            Some(account_event) = account_update_channel.recv() => {
                 // Fetch the account.
                 let account = fetch_account(
                     provider.clone().erased(),
-                    vaults,
+                    &mut vaults,
                     config.account_lens_address,
                     config.evc_address,
                     account_event,
@@ -328,11 +364,13 @@ mod test {
         primitives::{U256, address, bytes},
         providers::{Provider, ProviderBuilder},
     };
+    use tokio::{sync::mpsc, task::yield_now};
 
     use crate::{
         lens::fetch_account,
-        liquidation::prepare_liquidation,
+        liquidation::{PreparedLiquidation, prepare_liquidation},
         swap::{MulticallItem, SwapPayload, SwapQuote, SwapQuoteProvider},
+        transactions::execute_liquidation_queue,
         vaults::Vaults,
     };
 
@@ -417,6 +455,18 @@ mod test {
         .await
         .unwrap();
 
+        let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+
+        {
+            let provider = ProviderBuilder::new()
+                .wallet(network.wallet().unwrap())
+                .connect_http(network.endpoint_url());
+
+            tokio::spawn(async move {
+                execute_liquidation_queue(provider, liquidation_receiver, recipient).await;
+            });
+        }
+
         // Sanity check, as we later also check this and then it will be empty.
         assert!(!account.debt.is_empty());
 
@@ -433,21 +483,11 @@ mod test {
         .unwrap()
         .unwrap();
 
-        // Simulate the transaction execution.
-        let liquidation_receipt = provider
-            .send_transaction(
-                liquidation
-                    .into_transaction(recipient)
-                    .with_from(network.wallet().unwrap().default_signer().address()),
-            )
-            .await
-            .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
+        // Send the liquidation to be executed.
+        liquidation_sender.send(liquidation).await.unwrap();
 
-        // Check that we did not revert.
-        assert!(liquidation_receipt.status());
+        // Give it some time to perform the liquidation.
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Re-fetch the account to see its updated status.
         let account = fetch_account(

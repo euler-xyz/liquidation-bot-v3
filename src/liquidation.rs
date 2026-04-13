@@ -318,6 +318,10 @@ impl PreparedLiquidation {
             .with_input(calldata)
             .with_value(value)
     }
+
+    pub fn account(&self) -> Address {
+        self.account.address
+    }
 }
 
 #[cfg(test)]
