@@ -79,6 +79,10 @@ impl AccountsTracker {
             .map(|address| self.accounts.get(&address).unwrap().clone())
             .collect()
     }
+
+    pub fn all_accounts(&self) -> Vec<Account> {
+        self.accounts.values().cloned().collect()
+    }
 }
 
 #[cfg(test)]

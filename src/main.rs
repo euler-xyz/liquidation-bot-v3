@@ -255,6 +255,56 @@ pub async fn run(
     }
 }
 
+pub async fn refresh_and_check_all(
+    provider: &DynProvider,
+    config: Config,
+    accounts: &mut AccountsTracker,
+    vaults: &mut Vaults,
+    prices: Prices,
+) -> Result<Vec<Account>> {
+    // Fetch the latest indexed block.
+    let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "Couldn't fetch the latest indexed block from the subgraph: {:?}",
+                e
+            )
+        })?;
+
+    // fetch all accounts from the subgraph.
+    let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url, starting_block).await?;
+
+    // For each account fetch all their positions in vaults.
+    // We do this as a seperate step as this also filters out accounts that are not relevant.
+    for account in accounts_to_fetch.iter() {
+        accounts.add(
+            fetch_account(
+                provider.clone().erased(),
+                vaults,
+                config.account_lens_address,
+                config.evc_address,
+                *account,
+            )
+            .await?,
+        );
+    }
+
+    // Healthcheck all of the accounts, return the ones that are not healthy.
+    Ok(accounts
+        .all_accounts()
+        .iter()
+        .filter(|a| match a.calculate_health(&prices) {
+            Ok(health) => health.is_unhealthy(),
+            Err(err) => {
+                tracing::error!("Error while checking account health: {}", err);
+                false
+            }
+        })
+        .cloned()
+        .collect())
+}
+
 pub async fn fetch_list_of_accounts(url: Url, at_block: u64) -> Result<Vec<Address>> {
     let mut rows = Vec::new();
     let mut last_id: FixedBytes<40> = FixedBytes::ZERO;
