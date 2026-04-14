@@ -8,7 +8,7 @@ use alloy::{
 use anyhow::{Result, bail};
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, time};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     oracles::OraclesCache,
@@ -170,18 +170,26 @@ impl Account {
             debt.amount,
         )?;
 
-        // TODO: Incorporate the LiquidationLTV into the below calculation.
         let total_assets = self
             .assets
             .iter()
             .map(|a| {
+                // Take into acccount the liquidation LTV.
+                let amount = match debt.vault.ltvs.get(&a.vault.asset) {
+                    Some(ltv) => a.amount * ltv.liquidation / U256::from(10_000),
+                    None => {
+                        warn!( controller =? debt.vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
+                        U256::ZERO
+                    }
+                };
+
                 prices.get_quote(
                     &OracleIdentifier {
                         base_asset: a.vault.asset,
                         quote_asset: debt.vault.unit_of_account,
                         adapter: debt.vault.adapter,
                     },
-                    a.amount,
+                    amount,
                 )
             })
             .collect::<Result<Vec<U256>>>()?
