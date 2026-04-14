@@ -1,9 +1,9 @@
-use std::{collections::HashMap, default, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use alloy::{
     dyn_abi::SolType,
     primitives::{Address, Bytes, FixedBytes, U256},
-    providers::DynProvider,
+    providers::{CallItemBuilder, DynProvider, Provider},
     sol,
 };
 use anyhow::{Context, Result, anyhow};
@@ -11,18 +11,26 @@ use dashmap::DashMap;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info};
 
-use crate::types::OracleIdentifier;
+use crate::{
+    pyth::{
+        Pyth::{self},
+        fetch_pyth_data,
+    },
+    types::OracleIdentifier,
+};
 
 #[derive(Debug, Clone)]
 pub struct OraclesCache {
     lens: Address,
+    pyth: Address,
     oracles: Arc<DashMap<OracleIdentifier, Oracle>>,
 }
 
 impl OraclesCache {
-    pub fn new(oracle_lens: Address) -> Self {
+    pub fn new(oracle_lens: Address, pyth: Address) -> Self {
         OraclesCache {
             lens: oracle_lens,
+            pyth,
             oracles: Arc::new(DashMap::new()),
         }
     }
@@ -44,6 +52,54 @@ impl OraclesCache {
             }
         }
     }
+
+    // TODO: Determine if this is the correct place for this method to live.
+    pub async fn fetch_price(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<U256> {
+        // Build the call we will eventually perform.
+        let adapter = IPriceOracle::new(id.adapter, provider);
+        let adapter_call = adapter.getQuote(U256::from(100_000), id.base_asset, id.quote_asset);
+
+        // Fetch the oracle either from the chain or from the cache, we need this to determine how
+        // to fetch the price.
+        let oracle = self.fetch(provider, id.clone()).await?;
+
+        // Check to see if this oracle uses pyth.
+        let pyth_ids = oracle.pyth_ids();
+
+        // If it has no pyth dependencies then we can fetch the price from the chain.
+        if pyth_ids.is_empty() {
+            return Ok(adapter_call.call().await?);
+        }
+
+        let pyth_call = match fetch_pyth_data(provider, self.pyth, pyth_ids).await {
+            Ok(data) => {
+                CallItemBuilder::new(Pyth::new(self.pyth, provider).updatePriceFeeds(data.data))
+                    .value(data.cost)
+            }
+            // If the API call fails, then we will try to fetch the data from the chain anyway.
+            // Perhaps it is still up-to-date.
+            Err(e) => {
+                error!("Pyth api error {}", e);
+                return adapter_call.call().await.context("After failing to get the pyth update data from the api we attempted to call the adapter and failed");
+            }
+        };
+
+        // We are going to simulate updating the oracles and then calling the adapter to fetch the
+        // output.
+        let (_, price) = provider
+            .multicall()
+            .add_call(pyth_call)
+            .add(adapter_call)
+            .aggregate3_value()
+            .await?;
+
+        price.map_err(|e| {
+            anyhow!(
+                "Error fetching the price through the pyth multicall, err: {:?}",
+                e
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,16 +116,18 @@ struct OracleOutput {
 
 pub async fn poll_oracles(
     provider: DynProvider,
-    cache: OraclesCache,
+    oracles: OraclesCache,
     initial_oracles: Vec<OracleIdentifier>,
     event_channel: Sender<Vec<OracleChange>>,
 ) -> Result<()> {
-    let mut oracles: HashMap<OracleIdentifier, OracleOutput> = HashMap::new();
+    let mut prices: HashMap<OracleIdentifier, OracleOutput> = HashMap::new();
+
+    // TODO: Add a good way of figuring out what oracles we should be polling.
 
     // On start up we make sure to fetch all prices, this way there is never a situation in which we
     // do not already have a price.
     for oracle in initial_oracles.into_iter() {
-        let price = match oracle.fetch_price(&provider).await {
+        let price = match oracles.fetch_price(&provider, oracle.clone()).await {
             Ok(price) => price,
             Err(e) => {
                 error!(
@@ -84,7 +142,7 @@ pub async fn poll_oracles(
             }
         };
 
-        oracles.insert(
+        prices.insert(
             oracle.clone(),
             OracleOutput {
                 price,
@@ -97,7 +155,7 @@ pub async fn poll_oracles(
     // Send the entire set as a price change.
     event_channel
         .send(
-            oracles
+            prices
                 .iter()
                 .map(|(k, p)| OracleChange {
                     oracle: k.clone(),
@@ -109,12 +167,12 @@ pub async fn poll_oracles(
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
-        info!("Checking {} oracles for price changes", oracles.len());
+        info!("Checking {} oracles for price changes", prices.len());
 
         let mut changes = Vec::new();
-        for (oracle, prev) in oracles.iter_mut() {
+        for (oracle, prev) in prices.iter_mut() {
             // Poll the oracle.
-            let new_price = match oracle.fetch_price(&provider).await {
+            let new_price = match oracles.fetch_price(&provider, oracle.clone()).await {
                 Ok(price) => price,
                 Err(e) => {
                     error!(
@@ -231,17 +289,6 @@ sol! {
 }
 
 impl OracleIdentifier {
-    pub async fn fetch_price(&self, provider: &DynProvider) -> Result<U256> {
-        let oracle = IPriceOracle::new(self.adapter, provider);
-
-        let result = oracle
-            .getQuote(U256::from(100_000), self.base_asset, self.quote_asset)
-            .call()
-            .await?;
-
-        Ok(result)
-    }
-
     // Figure out the type of oracle that this is.
     pub async fn resolve(&self, provider: &DynProvider, lens: Address) -> Result<Oracle> {
         // We use the OracleLens to get the type of oracle.
@@ -351,10 +398,14 @@ mod test {
         providers::{Provider, ProviderBuilder},
     };
 
-    use crate::{oracles::OracleType, types::OracleIdentifier};
+    use crate::{
+        oracles::{OracleType, OraclesCache},
+        types::OracleIdentifier,
+    };
 
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
     const MAINNET_ORACLE_LENS: Address = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
+    const MAINNET_PYTH: Address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
 
     #[tokio::test]
     async fn identify_pyth_oracle() {
@@ -377,5 +428,24 @@ mod test {
         } else {
             panic!("Result is not a Pyth oracle");
         }
+    }
+
+    #[tokio::test]
+    async fn fetch_price_from_pyth_oracle() {
+        let oracle = OracleIdentifier {
+            base_asset: address!("0x96F6eF951840721AdBF46Ac996b59E0235CB985C"),
+            quote_asset: address!("0x0000000000000000000000000000000000000348"),
+            adapter: address!("0xfe3ED784f0244B24Df186e576313d682f6Ee9865"),
+        };
+
+        let provider = ProviderBuilder::new()
+            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
+            .erased();
+
+        let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, MAINNET_PYTH);
+        let price = oracles
+            .fetch_price(&provider, oracle.clone())
+            .await
+            .unwrap();
     }
 }

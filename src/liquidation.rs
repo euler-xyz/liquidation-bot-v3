@@ -350,7 +350,7 @@ mod test {
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let oracles = OraclesCache::new(oracle_lens);
+        let oracles = OraclesCache::new(oracle_lens, pyth_address);
 
         let account = address!("0x68e9669391AD60B5D72B996a9bd523c3962D2883");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
@@ -419,7 +419,7 @@ mod test {
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let oracles = OraclesCache::new(oracle_lens);
+        let oracles = OraclesCache::new(oracle_lens, pyth_address);
 
         let account = address!("0xa8847b8bf827A9A8d03b2749Da4bC230A16c59d8");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");

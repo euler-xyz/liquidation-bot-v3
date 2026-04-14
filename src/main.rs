@@ -58,7 +58,7 @@ async fn main() {
 
     let mut accounts = AccountsTracker::new();
     let prices = Prices::new();
-    let oracles = OraclesCache::new(config.oracle_lens_address);
+    let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
 
     // Fetch the latest indexed block.
     let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
