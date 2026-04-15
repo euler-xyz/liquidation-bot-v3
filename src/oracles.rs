@@ -6,10 +6,10 @@ use alloy::{
     providers::{CallItemBuilder, DynProvider, Provider},
     sol,
 };
-use anyhow::{Context, Result, anyhow};
-use dashmap::DashMap;
+use anyhow::{Context, Result, anyhow, bail};
+use dashmap::{DashMap, DashSet};
 use tokio::sync::mpsc::Sender;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     pyth::{
@@ -23,7 +23,15 @@ use crate::{
 pub struct OraclesCache {
     lens: Address,
     pyth: Address,
+
+    // The oracles that should be actively tracked.
+    active_oracles: Arc<DashSet<OracleIdentifier>>,
+
+    // The resolved oracle types.
     oracles: Arc<DashMap<OracleIdentifier, Oracle>>,
+
+    // The oracle outputs.
+    prices: Arc<DashMap<OracleIdentifier, U256>>,
 }
 
 impl OraclesCache {
@@ -31,11 +39,17 @@ impl OraclesCache {
         OraclesCache {
             lens: oracle_lens,
             pyth,
+            active_oracles: Arc::new(DashSet::new()),
             oracles: Arc::new(DashMap::new()),
+            prices: Arc::new(DashMap::new()),
         }
     }
 
-    pub async fn fetch(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<Oracle> {
+    // TODO: Lets just add all oracles that we know off to the active_oracles.
+    // The polling thread will then on a fixed schedule call this cache to fetch the latest price.
+    // Everything then uses this cache instead of the `Prices`.
+
+    pub async fn fetch_type(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<Oracle> {
         // Check if we have this id cached.
         match self.oracles.get(&id) {
             Some(oracle) => Ok(oracle.clone()),
@@ -53,15 +67,83 @@ impl OraclesCache {
         }
     }
 
+    /// Calculates the quote based on the most recent price.
+    pub fn get_quote(&self, oracle: &OracleIdentifier, amount: U256) -> Result<U256> {
+        let price = match self.prices.get(oracle) {
+            Some(price) => *price.value(),
+            None => {
+                match self.active_oracles.insert(oracle.clone()) {
+                    false => {
+                        debug!(
+                            oracle =? oracle,
+                            "Due to missing price data we were not able to calculate a quote for this oracle"
+                        );
+                        bail!("Missing oracle price")
+                    }
+                    true => {
+                        // We do not have a price for this. We add it to the active oracles, so next polling
+                        // cycle we will fetch a price.
+                        //
+                        // This is an edge-case and should already not happen, but this way we will
+                        // eventually have all prices we need.
+                        warn!(
+                            "Missing price for oracle {:?}, adding it to active oracles",
+                            oracle
+                        );
+                        bail!("No price available for this oracle as we were not tracking it")
+                    }
+                }
+            }
+        };
+
+        Ok((amount * price).div_ceil(U256::from(100_000)))
+    }
+
+    pub async fn fetch_latest_price(
+        &self,
+        provider: &DynProvider,
+        id: OracleIdentifier,
+    ) -> Result<U256> {
+        // Fetch the price.
+        let price = match self.fetch_price(provider, id.clone()).await {
+            Ok(price) => price,
+            Err(err) => {
+                // Add it to the active_oracles so we will be attempting to fetch the price next
+                // time around.
+                self.active_oracles.insert(id);
+                return Err(err);
+            }
+        };
+
+        // Cache the price.
+        let old_price = self.prices.insert(id.clone(), price);
+
+        // If we did not have a price before we make sure we are tracking this oracle.
+        if old_price.is_none() {
+            self.active_oracles.insert(id);
+        }
+
+        Ok(price)
+    }
+
+    /// Get the oracles that are actively being used.
+    pub fn active_oracles(&self) -> Vec<OracleIdentifier> {
+        // For simplicity on the consumer side of this function we turn it into a regular vector.
+        self.active_oracles
+            .iter()
+            .map(|item| item.clone())
+            .collect()
+    }
+
     // TODO: Determine if this is the correct place for this method to live.
-    pub async fn fetch_price(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<U256> {
+    async fn fetch_price(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<U256> {
         // Build the call we will eventually perform.
         let adapter = IPriceOracle::new(id.adapter, provider);
         let adapter_call = adapter.getQuote(U256::from(100_000), id.base_asset, id.quote_asset);
 
         // Fetch the oracle either from the chain or from the cache, we need this to determine how
         // to fetch the price.
-        let oracle = self.fetch(provider, id.clone()).await?;
+        let oracle = self.fetch_type(provider, id.clone()).await?;
 
         // Check to see if this oracle uses pyth.
         let pyth_ids = oracle.pyth_ids();
@@ -120,6 +202,7 @@ pub async fn poll_oracles(
     initial_oracles: Vec<OracleIdentifier>,
     event_channel: Sender<Vec<OracleChange>>,
 ) -> Result<()> {
+    // Track the most recent prices, this is used to notify the main thread on price changes.
     let mut prices: HashMap<OracleIdentifier, OracleOutput> = HashMap::new();
 
     // TODO: Add a good way of figuring out what oracles we should be polling.
@@ -127,7 +210,7 @@ pub async fn poll_oracles(
     // On start up we make sure to fetch all prices, this way there is never a situation in which we
     // do not already have a price.
     for oracle in initial_oracles.into_iter() {
-        let price = match oracles.fetch_price(&provider, oracle.clone()).await {
+        let price = match oracles.fetch_latest_price(&provider, oracle.clone()).await {
             Ok(price) => price,
             Err(e) => {
                 error!(
@@ -170,9 +253,9 @@ pub async fn poll_oracles(
         info!("Checking {} oracles for price changes", prices.len());
 
         let mut changes = Vec::new();
-        for (oracle, prev) in prices.iter_mut() {
+        for oracle in oracles.active_oracles().iter_mut() {
             // Poll the oracle.
-            let new_price = match oracles.fetch_price(&provider, oracle.clone()).await {
+            let new_price = match oracles.fetch_latest_price(&provider, oracle.clone()).await {
                 Ok(price) => price,
                 Err(e) => {
                     error!(
@@ -183,26 +266,39 @@ pub async fn poll_oracles(
                 }
             };
 
-            // Check if the price has changed.
-            if prev.price != new_price {
-                debug!(
-                    old_price =? prev.price,
-                    new_price =? new_price,
-                    "Oracle {}: {} -> {} its price has updated",
-                    oracle.adapter,
-                    oracle.base_asset,
-                    oracle.quote_asset
-                );
+            let prev = prices.get(oracle);
 
-                // Update out store.
-                prev.price = new_price;
+            match prev {
+                // If the price did not change.
+                Some(prev) if prev.price == new_price => {
+                    continue;
+                }
+                _ => {
+                    debug!(
+                        new_price =? new_price,
+                        "Oracle {}: {} -> {} its price has updated",
+                        oracle.adapter,
+                        oracle.base_asset,
+                        oracle.quote_asset
+                    );
 
-                // Track this as having changed.
-                changes.push(OracleChange {
-                    oracle: oracle.clone(),
-                    price: new_price,
-                });
-            }
+                    // Update out store.
+                    prices.insert(
+                        oracle.clone(),
+                        OracleOutput {
+                            price: new_price,
+                            last_polled_at: (),
+                            last_changed_at: (),
+                        },
+                    );
+
+                    // Track this as having changed.
+                    changes.push(OracleChange {
+                        oracle: oracle.clone(),
+                        price: new_price,
+                    });
+                }
+            };
         }
 
         // Notify the main thread of the price changes, if any.
@@ -353,7 +449,6 @@ impl Oracle {
 
     /// Returns all the pyth ids for this oracle.
     pub fn pyth_ids(&self) -> Vec<FixedBytes<32>> {
-        dbg!(&self);
         match self.oracle_type.clone() {
             OracleType::Pyth { id } => {
                 vec![id]
@@ -444,7 +539,7 @@ mod test {
 
         let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, MAINNET_PYTH);
         let price = oracles
-            .fetch_price(&provider, oracle.clone())
+            .fetch_latest_price(&provider, oracle.clone())
             .await
             .unwrap();
     }

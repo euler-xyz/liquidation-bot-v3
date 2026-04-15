@@ -8,7 +8,7 @@ use alloy::{
     sol,
     sol_types::SolCall,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use crate::{
     account::ILiquidation,
@@ -125,15 +125,12 @@ pub async fn prepare_liquidation(
             }
         };
 
-        dbg!(max_repay, max_yield);
         if max_repay.is_zero() || max_yield.is_zero() {
             continue;
         }
 
         let vault = Vault::new(asset.vault.address, provider);
         let max_assets = vault.convertToAssets(max_yield).call().await?;
-
-        dbg!("max assets", max_assets);
 
         let (amount_out, swap_data) = match debt.vault.asset == asset.vault.asset {
             true => {
@@ -184,11 +181,8 @@ pub async fn prepare_liquidation(
             }
         };
 
-        dbg!("got the swap result", amount_out);
-
         // Check that the resulting amount is more than the price of the debt.
         if amount_out < max_repay {
-            dbg!("negative result", max_repay);
             continue;
         }
 
@@ -324,6 +318,20 @@ impl PreparedLiquidation {
     }
 }
 
+pub async fn get_shares_to_underlying(provider: &DynProvider, vault: Address) -> Result<U256> {
+    Vault::new(vault, provider)
+        .convertToAssets(U256::from(100_000))
+        .call()
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "Couldn't fetch shares to underlying ratio for vault {}, err: {}",
+                vault,
+                e
+            )
+        })
+}
+
 #[cfg(test)]
 mod test {
     use alloy::{
@@ -371,7 +379,7 @@ mod test {
         let mut pyth_ids = Vec::new();
         for oracle in account.dependent_on().iter() {
             oracles
-                .fetch(&provider, oracle.clone())
+                .fetch_type(&provider, oracle.clone())
                 .await
                 .unwrap()
                 .pyth_ids()
@@ -442,7 +450,7 @@ mod test {
         let mut pyth_ids = Vec::new();
         for oracle in account.dependent_on().iter() {
             oracles
-                .fetch(&provider, oracle.clone())
+                .fetch_type(&provider, oracle.clone())
                 .await
                 .unwrap()
                 .pyth_ids()

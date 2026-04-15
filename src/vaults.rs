@@ -2,7 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use alloy::{primitives::Address, providers::DynProvider, sol};
 
-use crate::types::{LTV, Vault};
+use crate::{
+    liquidation::get_shares_to_underlying,
+    types::{LTV, Vault},
+};
 use anyhow::{Context, Result};
 
 pub struct Vaults {
@@ -100,6 +103,7 @@ impl Vaults {
                     borrow_interest_rate: (),
                     supply_interest_rate: (),
                     adapter: info.oracle,
+                    shares_to_underlying_ratio: get_shares_to_underlying(provider, address).await?,
                     ltvs: ltv_info
                         .iter()
                         .map(|ltv| {

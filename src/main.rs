@@ -8,7 +8,7 @@ use alloy::{
 use itertools::Itertools;
 use reqwest::Url;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     account::watch_chain_for_accounts,
@@ -17,7 +17,6 @@ use crate::{
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
     oracles::{OracleChange, OraclesCache, poll_oracles},
-    prices::Prices,
     pyth::fetch_pyth_data,
     subgraph::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
@@ -34,7 +33,6 @@ mod config;
 mod lens;
 mod liquidation;
 mod oracles;
-mod prices;
 mod pyth;
 mod subgraph;
 mod swap;
@@ -57,7 +55,6 @@ async fn main() {
     let mut vaults = Vaults::new(config.vault_lens_address);
 
     let mut accounts = AccountsTracker::new();
-    let prices = Prices::new();
     let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
 
     // Fetch the latest indexed block.
@@ -78,7 +75,7 @@ async fn main() {
     );
 
     // For each account fetch all their positions in vaults.
-    for account in accounts_to_fetch.iter().take(50) {
+    for account in accounts_to_fetch.iter().take(5) {
         accounts.add(
             fetch_account(
                 provider.clone().erased(),
@@ -133,7 +130,6 @@ async fn main() {
         config,
         &provider.erased(),
         accounts,
-        prices,
         vaults,
         oracles,
         account_events_receiver,
@@ -149,7 +145,7 @@ pub async fn run(
     provider: &DynProvider,
 
     mut accounts: AccountsTracker,
-    mut prices: Prices,
+    // mut prices: Prices,
     mut vaults: Vaults,
     oracles: OraclesCache,
 
@@ -161,9 +157,6 @@ pub async fn run(
     loop {
         tokio::select! {
             Some(oracle_updates) = oracle_update_channel.recv() => {
-                // Update our prices with the new ones.
-                prices.update_bulk(oracle_updates.clone());
-
                 // Figure out what accounts are affected by this change.
                 let accounts_affected = accounts.get_bulk_impacted_accounts(
                     oracle_updates.iter().map(|oc| oc.oracle.clone()).collect(),
@@ -175,7 +168,7 @@ pub async fn run(
                     .iter()
                     // NOTE: Errors regarding missing oracles get hidden here by the `.ok()`
                     .filter(|a| {
-                        match a.calculate_health(&prices) {
+                        match a.calculate_health(&oracles) {
                             Ok(health) => {
                                 health.is_unhealthy()
                             },
@@ -195,7 +188,7 @@ pub async fn run(
                     let mut pyth_ids = Vec::new();
                     for oracle in account.dependent_on().iter() {
                         let oracle_type = oracles
-                            .fetch(provider, oracle.clone())
+                            .fetch_type(provider, oracle.clone())
                             .await;
 
                         let oracle_type = match oracle_type {
@@ -224,10 +217,12 @@ pub async fn run(
                         false => None,
                     };
 
+                    debug!("Checking liquidation for {}", account.address);
                     let liquidation = prepare_liquidation(provider, &EulerSwapApi::new(config.swap_url.clone().into()), config.chain_id, pyth, config.wrapped_native_asset_address, config.liquidator_address, account.clone().clone()).await;
 
                     // TODO: log the error case.
                     if let Ok(Some(liquidation)) = liquidation {
+                        info!(liquidation =? liquidation, "Found liquidation for {}", account.address);
                         _ = liquidation_channel.send(liquidation).await;
                     }
                 }
@@ -260,7 +255,7 @@ pub async fn refresh_and_check_all(
     config: Config,
     accounts: &mut AccountsTracker,
     vaults: &mut Vaults,
-    prices: Prices,
+    oracles: OraclesCache,
 ) -> Result<Vec<Account>> {
     // Fetch the latest indexed block.
     let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
@@ -290,11 +285,13 @@ pub async fn refresh_and_check_all(
         );
     }
 
+    // TODO: Fetch most recent prices for all oracles. Also ensuring we do not have missing prices.
+
     // Healthcheck all of the accounts, return the ones that are not healthy.
     Ok(accounts
         .all_accounts()
         .iter()
-        .filter(|a| match a.calculate_health(&prices) {
+        .filter(|a| match a.calculate_health(&oracles) {
             Ok(health) => health.is_unhealthy(),
             Err(err) => {
                 tracing::error!("Error while checking account health: {}", err);

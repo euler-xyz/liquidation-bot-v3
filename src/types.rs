@@ -9,6 +9,7 @@ pub struct Vault {
     pub unit_of_account: Address,
     pub borrow_interest_rate: (),
     pub supply_interest_rate: (),
+    pub shares_to_underlying_ratio: U256,
     pub adapter: Address,
     pub ltvs: HashMap<Address, LTV>,
 }
@@ -74,6 +75,7 @@ impl Vault {
             unit_of_account: Address::random(),
             borrow_interest_rate: (),
             supply_interest_rate: (),
+            shares_to_underlying_ratio: U256::from(100_000),
             adapter: Address::random(),
             ltvs: HashMap::new(),
         }

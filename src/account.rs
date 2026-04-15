@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, FixedBytes, U256, address},
+    primitives::{Address, U256},
     providers::{DynProvider, Provider},
     rpc::types::{Filter, Log},
     sol,
@@ -8,11 +8,10 @@ use alloy::{
 use anyhow::{Result, bail};
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, time};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::{
     oracles::OraclesCache,
-    prices::Prices,
     types::{Account, OracleIdentifier, Vault},
 };
 
@@ -114,6 +113,10 @@ pub async fn watch_chain_for_accounts(
 
 impl AccountSolvency {
     pub fn is_unhealthy(&self) -> bool {
+        info!(
+            "account {} has {} in assets and {} in debt",
+            self.account, self.asset_value, self.debt_value
+        );
         self.debt_value > self.asset_value
     }
 }
@@ -155,7 +158,7 @@ impl Account {
         oracles
     }
 
-    pub fn calculate_health(&self, prices: &Prices) -> Result<AccountSolvency> {
+    pub fn calculate_health(&self, prices: &OraclesCache) -> Result<AccountSolvency> {
         let debt = match self.debt.first() {
             Some(debt) => debt,
             None => bail!("An account with no debt does not have a health score."),
@@ -175,10 +178,17 @@ impl Account {
             .iter()
             .map(|a| {
                 // Take into acccount the liquidation LTV.
-                let amount = match debt.vault.ltvs.get(&a.vault.asset) {
-                    Some(ltv) => a.amount * ltv.liquidation / U256::from(10_000),
+                let amount = match debt.vault.ltvs.get(&a.vault.address) {
+                    Some(ltv) => {
+                        // Convert the amount into shares.
+                        let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(100_000);
+
+                        // Apply the liquidation LTV onto the underlying.
+                        amount * ltv.liquidation / U256::from(10_000)
+                    },
                     None => {
-                        warn!( controller =? debt.vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
+                        debug!( controller =? debt.vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
+                        // This asset is not supported by the controller so its value is 0.
                         U256::ZERO
                     }
                 };
