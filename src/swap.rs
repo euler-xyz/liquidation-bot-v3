@@ -1,6 +1,6 @@
 use alloy::primitives::{Address, Bytes, U256};
-use anyhow::Result;
-use reqwest::Client;
+use anyhow::{Result, anyhow};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -133,11 +133,11 @@ pub trait SwapQuoteProvider {
 }
 
 pub struct EulerSwapApi {
-    base_url: String,
+    base_url: Url,
 }
 
 impl EulerSwapApi {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base_url: Url) -> Self {
         EulerSwapApi { base_url }
     }
 }
@@ -190,19 +190,38 @@ impl SwapQuoteProvider for EulerSwapApi {
         .build()?;
 
         let url =
-            reqwest::Url::parse_with_params(format!("{}/swap", self.base_url).as_str(), &query)
-                .unwrap();
+            reqwest::Url::parse_with_params(format!("{}swap", self.base_url).as_str(), &query)?;
+
+        // If set we get the api key that removed the request limit, otherwise we may get limited by
+        // cloudflare.
+        let api_key = std::env::var("SWAP_API_HEADER_SECRET ").unwrap_or_default();
 
         let response_body = client
-            .get(url)
+            .get(url.clone())
+            .header("x-api-key", api_key)
             .send()
             .await?
-            .json::<SwapApiResponse>()
+            .text()
             .await?;
+
+        let response_body: SwapApiResponse = match serde_json::from_str(&response_body) {
+            Ok(resp) => resp,
+            Err(err) => {
+                return Err(anyhow!(
+                    "Could not decode response from swap API, body: {}, err: {}, url: {}",
+                    response_body,
+                    err,
+                    url
+                ));
+            }
+        };
 
         // Make sure that the response was a success before attempting to deserialize the swapquote.
         if !response_body.success {
-            return Ok(None);
+            return Err(anyhow!(
+                "Swap API responded with: {}",
+                response_body.message.unwrap_or_default()
+            ));
         }
 
         match response_body.data {

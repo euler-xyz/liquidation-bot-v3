@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
-    rpc::types::error,
 };
 use itertools::Itertools;
 use reqwest::Url;
@@ -11,7 +10,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, info, warn};
 
 use crate::{
-    account::{watch_chain_for_accounts, watch_chain_for_accounts_from_latest},
+    account::watch_chain_for_accounts_from_latest,
     accounts::AccountsTracker,
     config::{Config, get_config},
     lens::fetch_account,
@@ -52,44 +51,9 @@ async fn main() {
     let provider = ProviderBuilder::new().connect_http(config.rpc_url.clone());
 
     // Our singleton vault store.
-    let mut vaults = Vaults::new(config.vault_lens_address);
-
-    let mut accounts = AccountsTracker::new();
+    let vaults = Vaults::new(config.vault_lens_address);
+    let accounts = AccountsTracker::new();
     let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
-
-    // // Fetch the latest indexed block.
-    // let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
-    //     .await
-    //     .map_err(|e| anyhow!("Couldn't fetch the latest indexed block from the subgraph"))
-    //     .unwrap();
-    //
-    // // Fetch all accounts that have debt.
-    // info!("Fetching accounts with debt at block {}", starting_block);
-    // let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url.clone(), starting_block)
-    //     .await
-    //     .unwrap();
-    //
-    // info!(
-    //     "Found {} accounts, loading their assets and debts",
-    //     accounts_to_fetch.len()
-    // );
-    //
-    // // For each account fetch all their positions in vaults.
-    // for account in accounts_to_fetch.iter().take(50) {
-    //     accounts.add(
-    //         fetch_account(
-    //             provider.clone().erased(),
-    //             &mut vaults,
-    //             config.account_lens_address,
-    //             config.evc_address,
-    //             *account,
-    //         )
-    //         .await
-    //         .unwrap(),
-    //     );
-    // }
-
-    info!("All assets and debts have been loaded, start watching for changes.");
 
     let (account_events_sender, account_events_receiver) = mpsc::channel::<Address>(100);
     let account_provider = provider.clone();
@@ -166,6 +130,10 @@ pub async fn run(
     let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
         config.full_resync_and_check_interval_seconds,
     ));
+
+    // TODO: Keep track of accounts for which the liquidation is currently being processed or was
+    // already processed but not yet updated. Otherwise unlucky timing of a price update might cause
+    // us to attempt to liquidate it twice.
 
     loop {
         tokio::select! {
@@ -372,7 +340,7 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter() {
+    for account in accounts_to_fetch.iter().take(250) {
         let fetched = match fetch_account(
             provider.clone().erased(),
             vaults,
@@ -516,12 +484,11 @@ mod test {
     use std::str::FromStr;
 
     use alloy::{
-        network::TransactionBuilder,
         node_bindings::Anvil,
         primitives::{U256, address, bytes},
         providers::{Provider, ProviderBuilder},
     };
-    use tokio::{sync::mpsc, task::yield_now};
+    use tokio::sync::mpsc;
 
     use crate::{
         lens::fetch_account,

@@ -174,7 +174,10 @@ pub async fn prepare_liquidation(
                     Ok(Some(quote)) => (quote.amount_out, Some(quote.swap)),
                     Ok(None) => continue,
                     Err(e) => {
-                        // TODO add tracing.
+                        tracing::error!(
+                            "Error while preparing liquidation as we try converting collateral into debt, err: {}",
+                            e
+                        );
                         continue;
                     }
                 }
@@ -231,14 +234,15 @@ pub async fn prepare_liquidation(
                         continue;
                     }
                     Err(e) => {
-                        // TODO: add tracing.
+                        tracing::error!(
+                            "Error while preparing liquidation as we converted profit into native asset, err: {}",
+                            e
+                        );
                         continue;
                     }
                 }
             }
         };
-
-        dbg!("Profit found of ", profit);
 
         // Check if the profit from this would be higher than what we have previously found.
         if let Some(prepared) = &prepared_liquidation
@@ -407,7 +411,7 @@ mod test {
         dbg!(
             prepare_liquidation(
                 &provider,
-                &EulerSwapApi::new("https://swap.euler.finance".to_string()),
+                &EulerSwapApi::new("https://swap.euler.finance".parse().unwrap()),
                 1,
                 pyth,
                 wrapped_native_asset,
@@ -477,7 +481,7 @@ mod test {
 
         prepare_liquidation(
             &provider,
-            &EulerSwapApi::new("https://swap.euler.finance".to_string()),
+            &EulerSwapApi::new("https://swap.euler.finance".parse().unwrap()),
             1,
             pyth,
             wrapped_native_asset,

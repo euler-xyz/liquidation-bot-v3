@@ -109,8 +109,7 @@ pub async fn fetch_account(
     let result = lens
         .getAccountEnabledVaultsInfo(evc, account)
         .call()
-        .await
-        .unwrap();
+        .await?;
 
     let mut debt = Vec::new();
     let mut assets = Vec::new();
