@@ -7,7 +7,7 @@ use figment::{
 use reqwest::Url;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Config {
     // Used as a sanity check for the RPC_URL.
     pub chain_id: u64,
@@ -44,6 +44,12 @@ pub struct Config {
 
     // The address that should be receiving the profit from the liquidations.
     pub profit_receiver: Address,
+
+    // At what interval should we poll the oracles to check for pricing changes.
+    pub oracle_polling_interval_seconds: u64,
+
+    // At what interval should we re-sync all accounts and check their health.
+    pub full_resync_and_check_interval_seconds: u64,
 }
 
 pub fn get_config() -> Result<Config> {

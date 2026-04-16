@@ -52,6 +52,23 @@ sol! {
     }
 }
 
+/// Watches the chain for account update events from the most recent block.
+pub async fn watch_chain_for_accounts_from_latest(
+    provider: DynProvider,
+    evc: Address,
+    account_update_channel: Sender<Address>,
+) {
+    let latest = match provider.get_block_number().await {
+        Ok(latest) => latest,
+        Err(err) => {
+            error!("Error while fetching the current block number: {err}");
+            0
+        }
+    };
+
+    watch_chain_for_accounts(provider, evc, account_update_channel, latest).await
+}
+
 /// Watches the chain for account update events
 pub async fn watch_chain_for_accounts(
     provider: DynProvider,
@@ -113,10 +130,6 @@ pub async fn watch_chain_for_accounts(
 
 impl AccountSolvency {
     pub fn is_unhealthy(&self) -> bool {
-        info!(
-            "account {} has {} in assets and {} in debt",
-            self.account, self.asset_value, self.debt_value
-        );
         self.debt_value > self.asset_value
     }
 }

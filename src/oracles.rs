@@ -45,9 +45,20 @@ impl OraclesCache {
         }
     }
 
-    // TODO: Lets just add all oracles that we know off to the active_oracles.
-    // The polling thread will then on a fixed schedule call this cache to fetch the latest price.
-    // Everything then uses this cache instead of the `Prices`.
+    /// Ensures that we have a price for all of the oracles, as long as they are reporting a price.
+    pub async fn ensure_prices_for(&self, provider: &DynProvider, ids: Vec<OracleIdentifier>) {
+        // Filter out the ones where we already have a price.
+        let new_ids: Vec<OracleIdentifier> = ids
+            .iter()
+            .filter(|id| self.active_oracles.insert(id.clone().clone()))
+            .cloned()
+            .collect();
+
+        // For these new ids we fetch their types and prices.
+        for id in new_ids.iter() {
+            let _ = self.fetch_latest_price(provider, id.clone()).await;
+        }
+    }
 
     pub async fn fetch_type(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<Oracle> {
         // Check if we have this id cached.
@@ -199,61 +210,27 @@ struct OracleOutput {
 pub async fn poll_oracles(
     provider: DynProvider,
     oracles: OraclesCache,
-    initial_oracles: Vec<OracleIdentifier>,
+    interval: tokio::time::Duration,
     event_channel: Sender<Vec<OracleChange>>,
 ) -> Result<()> {
     // Track the most recent prices, this is used to notify the main thread on price changes.
     let mut prices: HashMap<OracleIdentifier, OracleOutput> = HashMap::new();
 
-    // TODO: Add a good way of figuring out what oracles we should be polling.
-
-    // On start up we make sure to fetch all prices, this way there is never a situation in which we
-    // do not already have a price.
-    for oracle in initial_oracles.into_iter() {
-        let price = match oracles.fetch_latest_price(&provider, oracle.clone()).await {
-            Ok(price) => price,
-            Err(e) => {
-                error!(
-                    "Error while fetching price for oracle {}: {} -> {}: {e}",
-                    oracle.adapter, oracle.base_asset, oracle.quote_asset
-                );
-
-                // NOTICE: For now we insert a fake price, otherwise if we do not do this then this
-                // oracle will not be tracked.
-                // TODO: Add a way to show a price is not availabe for an oracle.
-                U256::ZERO
-            }
-        };
-
-        prices.insert(
-            oracle.clone(),
-            OracleOutput {
-                price,
-                last_polled_at: (),
-                last_changed_at: (),
-            },
-        );
-    }
-
-    // Send the entire set as a price change.
-    event_channel
-        .send(
-            prices
-                .iter()
-                .map(|(k, p)| OracleChange {
-                    oracle: k.clone(),
-                    price: p.price,
-                })
-                .collect(),
-        )
-        .await?;
-
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
-        info!("Checking {} oracles for price changes", prices.len());
+        tokio::time::sleep(interval).await;
+        let active_oracles = oracles.active_oracles();
+
+        if active_oracles.is_empty() {
+            continue;
+        }
+
+        info!(
+            "Checking {} oracles for price changes",
+            active_oracles.len()
+        );
 
         let mut changes = Vec::new();
-        for oracle in oracles.active_oracles().iter_mut() {
+        for oracle in active_oracles.iter() {
             // Poll the oracle.
             let new_price = match oracles.fetch_latest_price(&provider, oracle.clone()).await {
                 Ok(price) => price,

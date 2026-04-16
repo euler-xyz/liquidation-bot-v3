@@ -316,6 +316,10 @@ impl PreparedLiquidation {
     pub fn account(&self) -> Address {
         self.account.address
     }
+
+    pub fn profit(&self) -> U256 {
+        self.profit
+    }
 }
 
 pub async fn get_shares_to_underlying(provider: &DynProvider, vault: Address) -> Result<U256> {
@@ -482,5 +486,40 @@ mod test {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_check_if_liquidateble() {
+        let account = address!("0x21673a2A1347d318e9741C87C679c9A866aF1d07");
+
+        let provider = ProviderBuilder::new()
+            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
+            .erased();
+
+        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
+        let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
+
+        // Our singleton vault store.
+        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        let oracles = OraclesCache::new(oracle_lens, pyth_address);
+        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+
+        // Fetch an account.
+        let account = fetch_account(
+            provider.clone(),
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            account,
+        )
+        .await
+        .unwrap();
+
+        oracles
+            .ensure_prices_for(&provider, account.dependent_on())
+            .await;
+
+        dbg!(account.calculate_health(&oracles).unwrap().is_unhealthy());
     }
 }

@@ -121,6 +121,7 @@ mod test {
                         supply_interest_rate: (),
                         adapter: oracle.adapter,
                         ltvs: HashMap::new(),
+                        shares_to_underlying_ratio: U256::from(100_000),
                     }),
                 },
                 VaultAssetPosition::generate_random(),
@@ -135,6 +136,7 @@ mod test {
                     supply_interest_rate: (),
                     adapter: oracle.adapter,
                     ltvs: HashMap::new(),
+                    shares_to_underlying_ratio: U256::from(100_000),
                 }),
             }],
         );

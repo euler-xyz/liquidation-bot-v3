@@ -8,10 +8,10 @@ use alloy::{
 use itertools::Itertools;
 use reqwest::Url;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
-    account::watch_chain_for_accounts,
+    account::{watch_chain_for_accounts, watch_chain_for_accounts_from_latest},
     accounts::AccountsTracker,
     config::{Config, get_config},
     lens::fetch_account,
@@ -57,54 +57,52 @@ async fn main() {
     let mut accounts = AccountsTracker::new();
     let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
 
-    // Fetch the latest indexed block.
-    let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
-        .await
-        .map_err(|e| anyhow!("Couldn't fetch the latest indexed block from the subgraph"))
-        .unwrap();
-
-    // Fetch all accounts that have debt.
-    info!("Fetching accounts with debt at block {}", starting_block);
-    let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url.clone(), starting_block)
-        .await
-        .unwrap();
-
-    info!(
-        "Found {} accounts, loading their assets and debts",
-        accounts_to_fetch.len()
-    );
-
-    // For each account fetch all their positions in vaults.
-    for account in accounts_to_fetch.iter().take(5) {
-        accounts.add(
-            fetch_account(
-                provider.clone().erased(),
-                &mut vaults,
-                config.account_lens_address,
-                config.evc_address,
-                *account,
-            )
-            .await
-            .unwrap(),
-        );
-    }
+    // // Fetch the latest indexed block.
+    // let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
+    //     .await
+    //     .map_err(|e| anyhow!("Couldn't fetch the latest indexed block from the subgraph"))
+    //     .unwrap();
+    //
+    // // Fetch all accounts that have debt.
+    // info!("Fetching accounts with debt at block {}", starting_block);
+    // let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url.clone(), starting_block)
+    //     .await
+    //     .unwrap();
+    //
+    // info!(
+    //     "Found {} accounts, loading their assets and debts",
+    //     accounts_to_fetch.len()
+    // );
+    //
+    // // For each account fetch all their positions in vaults.
+    // for account in accounts_to_fetch.iter().take(50) {
+    //     accounts.add(
+    //         fetch_account(
+    //             provider.clone().erased(),
+    //             &mut vaults,
+    //             config.account_lens_address,
+    //             config.evc_address,
+    //             *account,
+    //         )
+    //         .await
+    //         .unwrap(),
+    //     );
+    // }
 
     info!("All assets and debts have been loaded, start watching for changes.");
 
     let (account_events_sender, account_events_receiver) = mpsc::channel::<Address>(100);
     let account_provider = provider.clone();
     tokio::spawn(async move {
-        watch_chain_for_accounts(
+        watch_chain_for_accounts_from_latest(
             account_provider.erased(),
             config.evc_address,
             account_events_sender,
-            starting_block,
         )
         .await
     });
 
     let (oracles_sender, oracles_receiver) = mpsc::channel::<Vec<OracleChange>>(100);
-    let initial_oracles = accounts.get_oracle_identifiers();
     let oracle_provider = provider.clone();
     {
         let oracles = oracles.clone();
@@ -112,7 +110,7 @@ async fn main() {
             poll_oracles(
                 oracle_provider.erased(),
                 oracles.clone(),
-                initial_oracles,
+                tokio::time::Duration::from_secs(config.oracle_polling_interval_seconds),
                 oracles_sender,
             )
             .await
@@ -120,7 +118,19 @@ async fn main() {
         });
     }
 
-    let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+    let (liquidation_sender, mut liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+
+    tokio::spawn(async move {
+        loop {
+            if let Some(liquidation) = liquidation_receiver.recv().await {
+                info!(
+                    "Recieved request to liquidate {}, potential profit {}",
+                    liquidation.account(),
+                    liquidation.profit()
+                );
+            }
+        }
+    });
 
     // TODO: Actually start the thread to execute liquidations, currently not doing this as logging
     // is fine for now.
@@ -145,7 +155,6 @@ pub async fn run(
     provider: &DynProvider,
 
     mut accounts: AccountsTracker,
-    // mut prices: Prices,
     mut vaults: Vaults,
     oracles: OraclesCache,
 
@@ -154,8 +163,37 @@ pub async fn run(
     mut oracle_update_channel: Receiver<Vec<OracleChange>>,
     liquidation_channel: Sender<PreparedLiquidation>,
 ) {
+    let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
+        config.full_resync_and_check_interval_seconds,
+    ));
+
     loop {
         tokio::select! {
+            _ = resync_interval.tick() => {
+                info!("Syncing all accounts and checking the health for each of them.");
+
+                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &mut accounts, &mut vaults, &oracles).await {
+                    Ok(unhealthy_accounts) => unhealthy_accounts,
+                    Err(e) => {
+                        tracing::error!("Error while refreshing, err:{}", e);
+                        continue;
+                    }
+                };
+
+                let number_of_unhealthy = unhealthy_accounts.len();
+
+                // Turn the unhealthy accounts into prepared liquidations.
+                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.unwrap();
+
+                if number_of_unhealthy != 0 || !liquidations.is_empty() {
+                    info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
+                }
+
+                // Send it to the liquidations thread to handle.
+                for liquidation in liquidations.into_iter() {
+                    let _ = liquidation_channel.send(liquidation).await;
+                }
+            }
             Some(oracle_updates) = oracle_update_channel.recv() => {
                 // Figure out what accounts are affected by this change.
                 let accounts_affected = accounts.get_bulk_impacted_accounts(
@@ -179,52 +217,21 @@ pub async fn run(
                         }
 
                     })
+                    .cloned()
                     .collect();
 
-                let provider = &provider.clone().erased();
-                for account in unhealthy_accounts.iter() {
-                    // First we check if any of the oracles this account makes use of are Pyth.
-                    // If so we need to fetch their most recent quotes.
-                    let mut pyth_ids = Vec::new();
-                    for oracle in account.dependent_on().iter() {
-                        let oracle_type = oracles
-                            .fetch_type(provider, oracle.clone())
-                            .await;
+                let number_of_unhealthy = unhealthy_accounts.len();
 
-                        let oracle_type = match oracle_type {
-                            Ok(t) => t,
-                            Err(e) => {
-                                tracing::warn!("Issues with fetching oracle information, optimistically assuming this to not be a pyth oracle: {}", e);
-                                continue;
-                            }
-                        };
+                // Turn the unhealthy accounts into prepared liquidations.
+                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.unwrap();
 
-                        oracle_type.pyth_ids()
-                            .iter()
-                            .for_each(|new_id| pyth_ids.push(*new_id));
-                        }
+                if number_of_unhealthy != 0 || !liquidations.is_empty() {
+                    info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
+                }
 
-                    // Fetch pyth data if needed.
-                    let pyth = match !pyth_ids.is_empty() {
-                        true => {
-                            // Call the Pyth API to fetch the most recent data for these oracles.
-                            Some(
-                                fetch_pyth_data(provider, config.pyth_address, pyth_ids)
-                                .await
-                                .unwrap(),
-                            )
-                        }
-                        false => None,
-                    };
-
-                    debug!("Checking liquidation for {}", account.address);
-                    let liquidation = prepare_liquidation(provider, &EulerSwapApi::new(config.swap_url.clone().into()), config.chain_id, pyth, config.wrapped_native_asset_address, config.liquidator_address, account.clone().clone()).await;
-
-                    // TODO: log the error case.
-                    if let Ok(Some(liquidation)) = liquidation {
-                        info!(liquidation =? liquidation, "Found liquidation for {}", account.address);
-                        _ = liquidation_channel.send(liquidation).await;
-                    }
+                // Send it to the liquidations thread to handle.
+                for liquidation in liquidations.into_iter() {
+                    let _ = liquidation_channel.send(liquidation).await;
                 }
             },
             // Track when an event happens on chain involving an account that potentially updates
@@ -250,13 +257,94 @@ pub async fn run(
     }
 }
 
+pub async fn prepare_liquidations(
+    provider: &DynProvider,
+    config: &Config,
+    oracles: &OraclesCache,
+    unhealthy_accounts: Vec<Account>,
+) -> Result<Vec<PreparedLiquidation>> {
+    let mut prepared = Vec::new();
+    for account in unhealthy_accounts.iter() {
+        // First we check if any of the oracles this account makes use of are Pyth.
+        // If so we need to fetch their most recent quotes.
+        let mut pyth_ids = Vec::new();
+        for oracle in account.dependent_on().iter() {
+            let oracle_type = oracles.fetch_type(provider, oracle.clone()).await;
+
+            let oracle_type = match oracle_type {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(
+                        "Issues with fetching oracle information, optimistically assuming this to not be a pyth oracle: {}",
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            oracle_type
+                .pyth_ids()
+                .iter()
+                .for_each(|new_id| pyth_ids.push(*new_id));
+        }
+
+        // Fetch pyth data if needed.
+        let pyth = match !pyth_ids.is_empty() {
+            true => match fetch_pyth_data(provider, config.pyth_address, pyth_ids).await {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    // We log the error and then skip this liquidation as we need to attempt to
+                    // process other liquidations.
+                    tracing::error!(
+                        "Could not fetch pyth data as we were attempting a liquidation, err:{}",
+                        e
+                    );
+                    continue;
+                }
+            },
+            false => None,
+        };
+
+        debug!("Checking liquidation for {}", account.address);
+
+        match prepare_liquidation(
+            provider,
+            &EulerSwapApi::new(config.swap_url.clone().into()),
+            config.chain_id,
+            pyth,
+            config.wrapped_native_asset_address,
+            config.liquidator_address,
+            account.clone().clone(),
+        )
+        .await
+        {
+            Ok(Some(liquidation)) => prepared.push(liquidation),
+            Ok(None) => {
+                debug!(
+                    "Was not able to find a route to liquidate {}",
+                    account.address
+                );
+            }
+            Err(e) => tracing::error!(
+                account =? account.address,
+                "Issue when attempting to liquidate account, err: {}",
+                e
+            ),
+        }
+    }
+
+    Ok(prepared)
+}
+
 pub async fn refresh_and_check_all(
     provider: &DynProvider,
     config: Config,
     accounts: &mut AccountsTracker,
     vaults: &mut Vaults,
-    oracles: OraclesCache,
+    oracles: &OraclesCache,
 ) -> Result<Vec<Account>> {
+    let provider_latest_block = provider.get_block_number().await?;
+
     // Fetch the latest indexed block.
     let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
         .await
@@ -267,31 +355,53 @@ pub async fn refresh_and_check_all(
             )
         })?;
 
+    // As a sanity check we report if the indexer is running out of sync with the chain.
+    // This does not cause any issues on our side as long as we have been watching the chain
+    // ourselves for new accounts.
+    if provider_latest_block > starting_block && provider_latest_block - starting_block > 30 {
+        warn!(
+            provider = provider_latest_block,
+            indexer = starting_block,
+            "Indexer is likely out of sync, it is {} blocks behind the rpc.",
+            provider_latest_block - starting_block
+        );
+    }
+
     // fetch all accounts from the subgraph.
     let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url, starting_block).await?;
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
     for account in accounts_to_fetch.iter() {
-        accounts.add(
-            fetch_account(
-                provider.clone().erased(),
-                vaults,
-                config.account_lens_address,
-                config.evc_address,
-                *account,
-            )
-            .await?,
-        );
+        let fetched = match fetch_account(
+            provider.clone().erased(),
+            vaults,
+            config.account_lens_address,
+            config.evc_address,
+            *account,
+        )
+        .await
+        {
+            Ok(account) => account,
+            Err(e) => {
+                warn!("Couldn't fetch account due to err: {}", e);
+                continue;
+            }
+        };
+
+        accounts.add(fetched);
     }
 
-    // TODO: Fetch most recent prices for all oracles. Also ensuring we do not have missing prices.
+    // Attempt to ensure we have all prices we will need for the healthcheck.
+    oracles
+        .ensure_prices_for(provider, accounts.get_oracle_identifiers())
+        .await;
 
     // Healthcheck all of the accounts, return the ones that are not healthy.
     Ok(accounts
         .all_accounts()
         .iter()
-        .filter(|a| match a.calculate_health(&oracles) {
+        .filter(|a| match a.calculate_health(oracles) {
             Ok(health) => health.is_unhealthy(),
             Err(err) => {
                 tracing::error!("Error while checking account health: {}", err);
