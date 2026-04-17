@@ -1,9 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
-
 use alloy::primitives::Address;
 use itertools::Itertools;
+use std::collections::HashMap;
 
-use crate::types::{Account, OracleIdentifier, Vault, VaultAssetPosition, VaultDebtPosition};
+use crate::types::{Account, OracleIdentifier, VaultAssetPosition, VaultDebtPosition};
 
 pub struct AccountsTracker {
     accounts: HashMap<Address, Account>,
@@ -41,8 +40,6 @@ impl AccountsTracker {
             return;
         }
 
-        // TODO: track if this is a new oracle we have not seen before, so we can start tracking its
-        // price.
         account.dependent_on().iter().for_each(|o| {
             let od = self.oracle_dependents.entry(o.clone()).or_default();
             od.push(account.address);
@@ -89,11 +86,18 @@ impl AccountsTracker {
 mod test {
     use std::{collections::HashMap, sync::Arc};
 
-    use alloy::primitives::{Address, U256};
+    use alloy::{
+        node_bindings::Anvil,
+        primitives::{Address, U256, address},
+        providers::{Provider, ProviderBuilder},
+    };
 
     use crate::{
         accounts::AccountsTracker,
+        config::VaultFilter,
+        lens::fetch_account,
         types::{OracleIdentifier, Vault, VaultAssetPosition, VaultDebtPosition},
+        vaults::Vaults,
     };
 
     #[tokio::test]
@@ -155,5 +159,115 @@ mod test {
         let found = accounts.get_impacted_accounts(&oracle);
         assert!(found.len() == 1);
         assert!(found.first().unwrap().address == account_to_find);
+    }
+
+    #[tokio::test]
+    async fn filter_whitelist() {
+        let block = 24899561;
+        let account = address!("0x5Dac9ccC215b9Af65B486066786F79d9aa0043Db");
+        let vault = address!("0x9bd52f2805c6af014132874124686e7b248c2cbb");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+
+        // The filter that will allow the account.
+        let happy_filter = VaultFilter {
+            mode: crate::config::VaultFilterMode::Whitelist,
+            items: vec![Address::random(), Address::random(), vault],
+        };
+
+        // Fetch the account with no filter, this should work as expected.
+        fetch_account(
+            provider.clone(),
+            &happy_filter,
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            account,
+        )
+        .await
+        .expect("Could not fetch account");
+
+        let sad_filter = VaultFilter {
+            mode: crate::config::VaultFilterMode::Whitelist,
+            items: vec![Address::random(), Address::random()],
+        };
+
+        // Fetch the account again but now with whitelist filter that should not allow it.
+        fetch_account(
+            provider.clone(),
+            &sad_filter,
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            account,
+        )
+        .await
+        .expect_err("Expected this to get filtered out by the whitelist");
+    }
+
+    #[tokio::test]
+    async fn filter_blacklist() {
+        let block = 24899561;
+        let account = address!("0x5Dac9ccC215b9Af65B486066786F79d9aa0043Db");
+        let vault = address!("0x9bd52f2805c6af014132874124686e7b248c2cbb");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+
+        // The filter that will allow the account.
+        let happy_filter = VaultFilter {
+            mode: crate::config::VaultFilterMode::Blacklist,
+            items: vec![Address::random(), Address::random()],
+        };
+
+        // Fetch the account with no filter, this should work as expected.
+        fetch_account(
+            provider.clone(),
+            &happy_filter,
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            account,
+        )
+        .await
+        .expect("Could not fetch account");
+
+        let sad_filter = VaultFilter {
+            mode: crate::config::VaultFilterMode::Blacklist,
+            items: vec![Address::random(), Address::random(), vault],
+        };
+
+        // Fetch the account again but now with whitelist filter that should not allow it.
+        fetch_account(
+            provider.clone(),
+            &sad_filter,
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            account,
+        )
+        .await
+        .expect_err("Expected this to get filtered out by the whitelist");
     }
 }

@@ -7,6 +7,31 @@ use figment::{
 use reqwest::Url;
 use serde::Deserialize;
 
+#[derive(Deserialize, Clone, Default)]
+pub enum VaultFilterMode {
+    #[default]
+    None,
+    Whitelist,
+    Blacklist,
+}
+
+#[derive(Deserialize, Clone, Default)]
+pub struct VaultFilter {
+    pub mode: VaultFilterMode,
+    pub items: Vec<Address>,
+}
+
+impl VaultFilter {
+    /// If the vault should be filtered out.
+    pub fn should_filter(&self, vault: Address) -> bool {
+        match self.mode {
+            VaultFilterMode::None => false,
+            VaultFilterMode::Whitelist => !self.items.contains(&vault),
+            VaultFilterMode::Blacklist => self.items.contains(&vault),
+        }
+    }
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Config {
     // Used as a sanity check for the RPC_URL.
@@ -50,6 +75,10 @@ pub struct Config {
 
     // At what interval should we re-sync all accounts and check their health.
     pub full_resync_and_check_interval_seconds: u64,
+
+    #[serde(default)]
+    // Lets the config specify in what mode the filter is operating and what to filter.
+    pub vault_filter: VaultFilter,
 }
 
 pub fn get_config() -> Result<Config> {

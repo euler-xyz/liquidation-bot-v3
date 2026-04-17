@@ -1,9 +1,10 @@
-use anyhow::Result;
+use anyhow::{Error, Result};
 
 use alloy::{primitives::Address, providers::DynProvider, sol};
 
 use crate::{
     Vaults,
+    config::VaultFilter,
     types::{Account, VaultAssetPosition, VaultDebtPosition},
 };
 
@@ -98,33 +99,52 @@ sol! {
 
 }
 
+#[derive(Debug)]
+pub enum FetchAccountError {
+    FilteredOut(Address),
+    Other(Error),
+}
+
 pub async fn fetch_account(
     provider: DynProvider,
+    filter: &VaultFilter,
     vaults: &mut Vaults,
     lens: Address,
     evc: Address,
     account: Address,
-) -> Result<Account> {
+) -> Result<Account, FetchAccountError> {
     let lens = AccountLens::new(lens, &provider);
     let result = lens
         .getAccountEnabledVaultsInfo(evc, account)
         .call()
-        .await?;
+        .await
+        .map_err(|e| FetchAccountError::Other(e.into()))?;
 
     let mut debt = Vec::new();
     let mut assets = Vec::new();
     for v in result.vaultAccountInfo.iter() {
         if !v.borrowed.is_zero() {
+            // Check the filter to see if we should be indexing this.
+            if filter.should_filter(v.vault) {
+                return Err(FetchAccountError::FilteredOut(v.vault));
+            }
+
             debt.push(VaultDebtPosition {
                 amount: v.borrowed,
-                vault: vaults.get_or_fetch(&provider, v.vault).await?,
+                vault: vaults
+                    .get_or_fetch(&provider, v.vault)
+                    .await
+                    .map_err(|e| FetchAccountError::Other(e.into()))?,
             });
         }
 
         if !v.assets.is_zero() {
             assets.push(VaultAssetPosition {
                 amount: v.assets,
-                vault: vaults.get_or_fetch(&provider, v.vault).await?,
+                vault: vaults
+                    .get_or_fetch(&provider, v.vault)
+                    .await
+                    .map_err(|e| FetchAccountError::Other(e.into()))?,
             });
         }
     }

@@ -348,8 +348,8 @@ mod test {
     };
 
     use crate::{
-        lens::fetch_account, liquidation::prepare_liquidation, oracles::OraclesCache,
-        pyth::fetch_pyth_data, swap::EulerSwapApi, vaults::Vaults,
+        config::VaultFilter, lens::fetch_account, liquidation::prepare_liquidation,
+        oracles::OraclesCache, pyth::fetch_pyth_data, swap::EulerSwapApi, vaults::Vaults,
     };
 
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
@@ -374,6 +374,7 @@ mod test {
         // Fetch an account.
         let account = fetch_account(
             provider.clone(),
+            &VaultFilter::default(),
             vaults,
             address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
@@ -443,6 +444,7 @@ mod test {
         // Fetch an account.
         let account = fetch_account(
             provider.clone(),
+            &VaultFilter::default(),
             vaults,
             address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
@@ -512,6 +514,7 @@ mod test {
         // Fetch an account.
         let account = fetch_account(
             provider.clone(),
+            &VaultFilter::default(),
             vaults,
             address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),

@@ -206,18 +206,30 @@ pub async fn run(
             // its assets and debts, we (re)fetch the account and add it to our tracker.
             Some(account_event) = account_update_channel.recv() => {
                 // Fetch the account.
-                let account = fetch_account(
+                match fetch_account(
                     provider.clone().erased(),
+                    &config.vault_filter,
                     &mut vaults,
                     config.account_lens_address,
                     config.evc_address,
                     account_event,
                 )
-                    .await
-                    .unwrap();
+                    .await {
+                        Ok(account) => {
+                            // Track its (new) state.
+                            accounts.add(account);
+                        },
+                        Err(lens::FetchAccountError::FilteredOut(vault)) => {
+                            // NOTE: Should we delete the account from the index if it was already
+                            // in there? That *shouldn't* be possible but would be a strange edge-case
+                            // if it was somehow in there.
+                            tracing::debug!("Account {} was not indexed due to it being filtered out by the vault filter for vault {}", account_event, vault);
+                        },
+                        Err(lens::FetchAccountError::Other(e)) => {
+                            tracing::error!("Issue while fetching new account after finding an event onchain, err: {}", e);
+                        },
+                    }
 
-                // Track its (new) state.
-                accounts.add(account);
 
                 info!("Received account event, now tracking account {}", account_event);
             },
@@ -277,7 +289,7 @@ pub async fn prepare_liquidations(
 
         match prepare_liquidation(
             provider,
-            &EulerSwapApi::new(config.swap_url.clone().into()),
+            &EulerSwapApi::new(config.swap_url.clone()),
             config.chain_id,
             pyth,
             config.wrapped_native_asset_address,
@@ -338,11 +350,14 @@ pub async fn refresh_and_check_all(
     // fetch all accounts from the subgraph.
     let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url, starting_block).await?;
 
+    info!("Re-syncing {} accounts", accounts_to_fetch.len());
+
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter().take(250) {
-        let fetched = match fetch_account(
+    for account in accounts_to_fetch.iter().take(50) {
+        match fetch_account(
             provider.clone().erased(),
+            &config.vault_filter,
             vaults,
             config.account_lens_address,
             config.evc_address,
@@ -350,14 +365,24 @@ pub async fn refresh_and_check_all(
         )
         .await
         {
-            Ok(account) => account,
-            Err(e) => {
-                warn!("Couldn't fetch account due to err: {}", e);
-                continue;
+            Ok(account) => {
+                // Track its (new) state.
+                accounts.add(account);
             }
-        };
-
-        accounts.add(fetched);
+            Err(lens::FetchAccountError::FilteredOut(vault)) => {
+                // NOTE: Should we delete the account from the index if it was already
+                // in there? That *shouldn't* be possible but would be a strange edge-case
+                // if it was somehow in there.
+                tracing::debug!(
+                    "Account {} was not indexed due to it being filtered out by the vault filter for vault {}",
+                    *account,
+                    vault
+                );
+            }
+            Err(lens::FetchAccountError::Other(e)) => {
+                tracing::warn!("Issue while fetching account during re-sync, err: {}", e);
+            }
+        }
     }
 
     // Attempt to ensure we have all prices we will need for the healthcheck.
@@ -394,7 +419,7 @@ pub async fn fetch_list_of_accounts(url: Url, at_block: u64) -> Result<Vec<Addre
             },
         )
         .await
-        .map_err(|e| anyhow!("Error while fetching vault balances"))?;
+        .map_err(|e| anyhow!("Error while fetching vault balances, err: {:?}", e))?;
 
         // We have reached the end.
         if new.len() < 1000 {
@@ -415,9 +440,12 @@ pub async fn fetch_all_accounts(
     url: Url,
 ) -> anyhow::Result<Vec<Account>> {
     // Fetch the latest indexed block.
-    let block = fetch_latest_indexed_block(url.clone())
-        .await
-        .map_err(|e| anyhow!("Couldn't fetch the latest indexed block from the subgraph"))?;
+    let block = fetch_latest_indexed_block(url.clone()).await.map_err(|e| {
+        anyhow!(
+            "Couldn't fetch the latest indexed block from the subgraph, err: {:?}",
+            e
+        )
+    })?;
 
     let mut rows = Vec::new();
     let mut last_id: FixedBytes<40> = FixedBytes::ZERO;
@@ -432,7 +460,7 @@ pub async fn fetch_all_accounts(
             },
         )
         .await
-        .map_err(|e| anyhow!("Error while fetching vault balances"))?;
+        .map_err(|e| anyhow!("Error while fetching vault balances, err: {:?}", e))?;
 
         // We have reached the end.
         if new.len() < 1000 {
@@ -491,6 +519,7 @@ mod test {
     use tokio::sync::mpsc;
 
     use crate::{
+        config::VaultFilter,
         lens::fetch_account,
         liquidation::{PreparedLiquidation, prepare_liquidation},
         swap::{MulticallItem, SwapPayload, SwapQuote, SwapQuoteProvider},
@@ -571,6 +600,7 @@ mod test {
         // Fetch the account.
         let account = fetch_account(
             provider.clone(),
+            &VaultFilter::default(),
             vaults,
             address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
@@ -616,6 +646,7 @@ mod test {
         // Re-fetch the account to see its updated status.
         let account = fetch_account(
             provider.clone(),
+            &VaultFilter::default(),
             vaults,
             address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
