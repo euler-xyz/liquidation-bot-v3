@@ -100,6 +100,7 @@ async fn main() {
 
     let (liquidation_sender, mut liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
 
+    let liq_provider = provider.clone();
     let profit_receiver = config.profit_receiver;
     tokio::spawn(async move {
         loop {
@@ -112,6 +113,16 @@ async fn main() {
                     liquidation.account(),
                     liquidation.profit()
                 );
+
+                // Simulate the transaction.
+                match liq_provider.call(transaction).await {
+                    Ok(ok) => {
+                        info!(ok =? ok, "Simulation ok!");
+                    }
+                    Err(err) => {
+                        error!("Issue simulating liquidation, err: {err}");
+                    }
+                };
             }
         }
     });
