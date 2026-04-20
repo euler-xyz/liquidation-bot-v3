@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
 };
 use itertools::Itertools;
 use reqwest::Url;
+use std::collections::HashMap;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;

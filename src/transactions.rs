@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::Address,
+    primitives::{Address, U256},
     providers::{Provider, WalletProvider},
 };
 use tokio::sync::mpsc::Receiver;
@@ -18,13 +18,36 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             // Build the transaction.
             let tx = liquidation.clone().into_transaction(profit_receiver);
 
-            // Simulate the transaction.
-            let simulation = provider.call(tx.clone()).await;
-
-            if let Err(err) = simulation {
-                error!("Error simulating liquidation, err: {}", err);
-                continue;
+            // Get the gas price for the liquidation.
+            let gas_price = match provider.get_gas_price().await {
+                Ok(price) => price,
+                Err(err) => {
+                    error!(
+                        "Could not fetch gas price from the RPC, skipping liquidation, err: {}",
+                        err
+                    );
+                    continue;
+                }
             };
+
+            // Estimate the gas, this also informs us on if its going to revert or not.
+            let gas_usage = match provider.estimate_gas(tx.clone()).await {
+                Ok(usage) => usage,
+                Err(err) => {
+                    error!("Error simulating liquidation, err: {}", err);
+                    continue;
+                }
+            };
+
+            // Make sure this is profitable, if not then we do not execute.
+            let cost = u128::from(gas_usage) * gas_price;
+            if U256::from(cost) > liquidation.profit() {
+                info!(
+                    gas_price, gas_usage, cost = cost, profit =? liquidation.profit(),
+                    "Transaction to liquidate {} is not profitable, skipping it.",
+                    liquidation.account()
+                );
+            }
 
             // NOTE: We do not wait for any extra confirmations as there is essentially no risk
             // of a re-org.
