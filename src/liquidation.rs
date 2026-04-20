@@ -89,9 +89,14 @@ pub async fn prepare_liquidation(
     let vault = ILiquidation::new(vault_address, provider);
 
     let start = SystemTime::now();
-    let since_the_epoch = start
-        .duration_since(UNIX_EPOCH)
-        .expect("time should go forward");
+    let since_the_epoch = match start.duration_since(UNIX_EPOCH) {
+        Ok(since) => since,
+        Err(err) => {
+            return Err(anyhow!(
+                "Issue while getting the current time, it appears to be moving backwards. err: {err}"
+            ));
+        }
+    };
 
     let mut prepared_liquidation: Option<PreparedLiquidation> = None;
     for asset in account.assets.iter() {

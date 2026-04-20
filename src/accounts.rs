@@ -1,6 +1,7 @@
 use alloy::primitives::Address;
 use itertools::Itertools;
 use std::collections::HashMap;
+use tracing::error;
 
 use crate::types::{Account, OracleIdentifier, VaultAssetPosition, VaultDebtPosition};
 
@@ -59,9 +60,15 @@ impl AccountsTracker {
             .get(oracle)
             .unwrap_or(&vec![])
             .iter()
-            // This unwrap is still safe as its impossible to be an oracle dependent and not be
-            // mapped in accounts. We should still get rid of it though.
-            .map(|a| self.accounts.get(a).unwrap().clone())
+            .filter_map(|a| {
+                match self.accounts.get(a) {
+                    Some(account) => Some(account.clone()),
+                    None => {
+                        error!("As we were fetching an impacted account we do not have the account stored, this should be impossible. Some invariant was broken.");
+                        None
+                    }
+                }
+            })
             .collect()
     }
 
@@ -71,9 +78,15 @@ impl AccountsTracker {
             .iter()
             .flat_map(|o| self.oracle_dependents.get(o).cloned().unwrap_or(vec![]))
             .unique()
-            // This unwrap is still safe as its impossible to be an oracle dependent and not be
-            // mapped in accounts. We should still get rid of it though.
-            .map(|address| self.accounts.get(&address).unwrap().clone())
+            .filter_map(|a| {
+                match self.accounts.get(&a) {
+                    Some(account) => Some(account.clone()),
+                    None => {
+                        error!("As we were fetching an impacted account we do not have the account stored, this should be impossible. Some invariant was broken.");
+                        None
+                    }
+                }
+            })
             .collect()
     }
 

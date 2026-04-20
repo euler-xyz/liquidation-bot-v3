@@ -1,3 +1,6 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+#![cfg_attr(not(test), deny(clippy::expect_used))]
+
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
@@ -6,7 +9,7 @@ use itertools::Itertools;
 use reqwest::Url;
 use std::collections::HashMap;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
@@ -47,7 +50,13 @@ async fn main() {
         .init();
 
     // Load the bot configuration.
-    let config = get_config().expect("Could not load the configuration for the bot");
+    let config = match get_config() {
+        Ok(config) => config,
+        Err(err) => {
+            error!("Could not load the configuration for the bot, due to err: {err}");
+            return;
+        }
+    };
 
     // Build the provider.
     let provider = ProviderBuilder::new().connect_http(config.rpc_url.clone());
@@ -73,14 +82,19 @@ async fn main() {
     {
         let oracles = oracles.clone();
         tokio::spawn(async move {
-            poll_oracles(
+            let _ = poll_oracles(
                 oracle_provider.erased(),
                 oracles.clone(),
                 tokio::time::Duration::from_secs(config.oracle_polling_interval_seconds),
                 oracles_sender,
             )
             .await
-            .unwrap();
+            .inspect_err(|e| {
+                error!(
+                    "Polling of oracles had a critical error, it is no longer operating. err: {}",
+                    e
+                )
+            });
         });
     }
 
@@ -437,7 +451,11 @@ pub async fn fetch_list_of_accounts(url: Url, at_block: u64) -> Result<Vec<Addre
             break;
         }
 
-        last_id = new.last().unwrap().id;
+        last_id = match new.last() {
+            Some(last) => last.id,
+            None => break,
+        };
+
         rows.extend(new);
     }
 
@@ -478,7 +496,11 @@ pub async fn fetch_all_accounts(
             break;
         }
 
-        last_id = new.last().unwrap().id;
+        last_id = match new.last() {
+            Some(last) => last.id,
+            None => break,
+        };
+
         rows.extend(new);
     }
 

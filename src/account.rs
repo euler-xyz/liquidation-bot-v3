@@ -113,7 +113,13 @@ pub async fn watch_chain_for_accounts(
                             "Found account event for {} at block {}",
                             decoded.account, block
                         );
-                        account_update_channel.send(decoded.account).await.unwrap();
+
+                        // Send the update over the channel.
+                        if let Err(err) = account_update_channel.send(decoded.account).await {
+                            error!(
+                                "Issue when attempting to send update over accounts channel, it was likely dropped, err: {err}"
+                            );
+                        }
                     }
                     Err(e) => error!("Decode error: {e}"),
                 }
