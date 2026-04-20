@@ -8,6 +8,7 @@ use itertools::Itertools;
 use reqwest::Url;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, info, warn};
+use tracing_subscriber::EnvFilter;
 
 use crate::{
     account::watch_chain_for_accounts_from_latest,
@@ -42,7 +43,9 @@ mod vaults;
 #[tokio::main]
 async fn main() {
     // Configure tracing.
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
+        .init();
 
     // Load the bot configuration.
     let config = get_config().expect("Could not load the configuration for the bot");
@@ -84,10 +87,14 @@ async fn main() {
 
     let (liquidation_sender, mut liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
 
+    let profit_receiver = config.profit_receiver;
     tokio::spawn(async move {
         loop {
             if let Some(liquidation) = liquidation_receiver.recv().await {
+                let transaction = liquidation.clone().into_transaction(profit_receiver);
+
                 info!(
+                    transaction =? transaction,
                     "Recieved request to liquidate {}, potential profit {}",
                     liquidation.account(),
                     liquidation.profit()
@@ -151,7 +158,9 @@ pub async fn run(
                 let number_of_unhealthy = unhealthy_accounts.len();
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.unwrap();
+                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                    tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
+                }).unwrap_or_default();
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
                     info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
@@ -191,7 +200,9 @@ pub async fn run(
                 let number_of_unhealthy = unhealthy_accounts.len();
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.unwrap();
+                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                    tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
+                }).unwrap_or_default();
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
                     info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
@@ -354,7 +365,7 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter().take(50) {
+    for account in accounts_to_fetch.iter() {
         match fetch_account(
             provider.clone().erased(),
             &config.vault_filter,

@@ -15,5 +15,5 @@ figment = { version = "0.10", features = ["toml", "env"] }
 itertools = "0.14.0"
 backon = { version = "1.6.0", features = ["tokio"]}
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dashmap = "6.1.0"

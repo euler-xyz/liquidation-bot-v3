@@ -123,18 +123,18 @@ pub async fn fetch_account(
     let mut debt = Vec::new();
     let mut assets = Vec::new();
     for v in result.vaultAccountInfo.iter() {
-        if !v.borrowed.is_zero() {
-            // Check the filter to see if we should be indexing this.
-            if filter.should_filter(v.vault) {
-                return Err(FetchAccountError::FilteredOut(v.vault));
-            }
+        // Check the filter to see if we should be indexing this.
+        if filter.should_filter(v.vault) {
+            return Err(FetchAccountError::FilteredOut(v.vault));
+        }
 
+        if !v.borrowed.is_zero() {
             debt.push(VaultDebtPosition {
                 amount: v.borrowed,
                 vault: vaults
                     .get_or_fetch(&provider, v.vault)
                     .await
-                    .map_err(|e| FetchAccountError::Other(e.into()))?,
+                    .map_err(FetchAccountError::Other)?,
             });
         }
 
@@ -144,7 +144,7 @@ pub async fn fetch_account(
                 vault: vaults
                     .get_or_fetch(&provider, v.vault)
                     .await
-                    .map_err(|e| FetchAccountError::Other(e.into()))?,
+                    .map_err(FetchAccountError::Other)?,
             });
         }
     }
