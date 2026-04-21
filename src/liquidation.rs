@@ -77,6 +77,7 @@ pub async fn prepare_liquidation(
     pyth: Option<PythFeedInput>,
     wrapped_native_asset_address: Address,
     liquidator_address: Address,
+    swapper_address: Address,
     account: Account,
 ) -> Result<Option<PreparedLiquidation>> {
     let debt = match account.debt.first() {
@@ -150,12 +151,12 @@ pub async fn prepare_liquidation(
                         chain_id: chain_id.to_string(),
                         token_in: asset.vault.asset,
                         token_out: debt.vault.asset,
-                        receiver: liquidator_address,
+                        receiver: swapper_address,
                         vault_in: asset.vault.address,
                         // TODO: this should be the signer address
                         origin: liquidator_address,
-                        account_in: liquidator_address,
-                        account_out: liquidator_address,
+                        account_in: swapper_address,
+                        account_out: swapper_address,
                         amount: max_assets,
                         target_debt: U256::ZERO,
                         current_debt: max_repay,
@@ -368,6 +369,7 @@ mod test {
         let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
         let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
+        let swapper = address!("0x2Bba09866b6F1025258542478C39720A09B728bF");
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
@@ -422,6 +424,7 @@ mod test {
                 pyth,
                 wrapped_native_asset,
                 liquidator_address,
+                swapper,
                 account,
             )
             .await
@@ -438,6 +441,7 @@ mod test {
         let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
         let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
+        let swapper = address!("0x2Bba09866b6F1025258542478C39720A09B728bF");
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
@@ -493,6 +497,7 @@ mod test {
             pyth,
             wrapped_native_asset,
             liquidator_address,
+            swapper,
             account,
         )
         .await

@@ -329,6 +329,7 @@ pub async fn prepare_liquidations(
             pyth,
             config.wrapped_native_asset_address,
             config.liquidator_address,
+            config.swapper_address,
             account.clone().clone(),
         )
         .await
@@ -389,7 +390,7 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter() {
+    for account in accounts_to_fetch.iter().take(150) {
         match fetch_account(
             provider.clone().erased(),
             &config.vault_filter,
@@ -556,7 +557,7 @@ mod test {
 
     use alloy::{
         node_bindings::Anvil,
-        primitives::{U256, address, bytes},
+        primitives::{Address, U256, address, bytes},
         providers::{Provider, ProviderBuilder},
     };
     use tokio::sync::mpsc;
@@ -674,6 +675,8 @@ mod test {
             None, // This liquidation does not use any pyth oracles.
             wrapped_native_asset,
             liquidator_address,
+            // Since we mock the swap provider, this does not matter for us.
+            Address::ZERO,
             account,
         )
         .await

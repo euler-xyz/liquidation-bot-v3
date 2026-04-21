@@ -52,6 +52,9 @@ pub struct Config {
     // The address of the pyth contracts.
     pub pyth_address: Address,
 
+    // The address of the swapper contract.
+    pub swapper_address: Address,
+
     // The wrapped version of the native asset.
     pub wrapped_native_asset_address: Address,
 
