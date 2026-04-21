@@ -1,4 +1,4 @@
-use alloy::primitives::Address;
+use alloy::{primitives::Address, signers::local::PrivateKeySigner};
 use anyhow::Result;
 use figment::{
     Figment,
@@ -69,6 +69,12 @@ pub struct Config {
 
     // The liquidator contract.
     pub liquidator_address: Address,
+
+    // The public address of the EOA, used as a sanity check.
+    pub eoa_address: Address,
+
+    // The private of the EOA that will perform the liquidations.
+    pub eoa_private_key: String,
 
     // The address that should be receiving the profit from the liquidations.
     pub profit_receiver: Address,

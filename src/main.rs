@@ -4,6 +4,7 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
+    signers::local::PrivateKeySigner,
 };
 use itertools::Itertools;
 use reqwest::Url;
@@ -54,6 +55,27 @@ async fn main() {
         Ok(config) => config,
         Err(err) => {
             error!("Could not load the configuration for the bot, due to err: {err}");
+            return;
+        }
+    };
+
+    // Construct the signer.
+    let pk_signer: PrivateKeySigner = match config.eoa_private_key.parse::<PrivateKeySigner>() {
+        Ok(signer) => {
+            // Do the sanity check and make sure the private key matches the public address.
+            if signer.address() != config.eoa_address {
+                error!(
+                    pk_address =? signer.address(),
+                    pb_address =? config.eoa_address,
+                    "Configured EOA private key and configured EOA address do not match."
+                );
+                return;
+            }
+
+            signer
+        }
+        Err(_) => {
+            error!("Could not turn the eoa_private_key into a signer.");
             return;
         }
     };
@@ -330,6 +352,7 @@ pub async fn prepare_liquidations(
             config.wrapped_native_asset_address,
             config.liquidator_address,
             config.swapper_address,
+            config.eoa_address,
             account.clone().clone(),
         )
         .await
@@ -556,6 +579,7 @@ mod test {
     use std::str::FromStr;
 
     use alloy::{
+        network::NetworkWallet,
         node_bindings::Anvil,
         primitives::{Address, U256, address, bytes},
         providers::{Provider, ProviderBuilder},
@@ -677,6 +701,7 @@ mod test {
             liquidator_address,
             // Since we mock the swap provider, this does not matter for us.
             Address::ZERO,
+            network.wallet().unwrap().default_signer().address(),
             account,
         )
         .await

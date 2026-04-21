@@ -78,6 +78,7 @@ pub async fn prepare_liquidation(
     wrapped_native_asset_address: Address,
     liquidator_address: Address,
     swapper_address: Address,
+    liquidator_eoa: Address,
     account: Account,
 ) -> Result<Option<PreparedLiquidation>> {
     let debt = match account.debt.first() {
@@ -153,8 +154,7 @@ pub async fn prepare_liquidation(
                         token_out: debt.vault.asset,
                         receiver: swapper_address,
                         vault_in: asset.vault.address,
-                        // TODO: this should be the signer address
-                        origin: liquidator_address,
+                        origin: liquidator_eoa,
                         account_in: swapper_address,
                         account_out: swapper_address,
                         amount: max_assets,
@@ -210,8 +210,7 @@ pub async fn prepare_liquidation(
                         token_out: wrapped_native_asset_address,
                         receiver: liquidator_address,
                         vault_in: debt.vault.address,
-                        // TODO: this should be the signer address
-                        origin: liquidator_address,
+                        origin: liquidator_eoa,
                         account_in: liquidator_address,
                         account_out: liquidator_address,
                         amount: profit,
@@ -425,6 +424,7 @@ mod test {
                 wrapped_native_asset,
                 liquidator_address,
                 swapper,
+                liquidator_address,
                 account,
             )
             .await
@@ -498,6 +498,7 @@ mod test {
             wrapped_native_asset,
             liquidator_address,
             swapper,
+            liquidator_address,
             account,
         )
         .await
