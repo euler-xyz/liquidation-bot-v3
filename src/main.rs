@@ -202,6 +202,7 @@ pub async fn run(
                 };
 
                 let number_of_unhealthy = unhealthy_accounts.len();
+                info!("While resyncing we found {} accounts that are unhealthy, now checking which we can/should liquidate..", number_of_unhealthy);
 
                 // Turn the unhealthy accounts into prepared liquidations.
                 let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
@@ -579,18 +580,18 @@ mod test {
     use std::str::FromStr;
 
     use alloy::{
-        network::NetworkWallet,
         node_bindings::Anvil,
         primitives::{Address, U256, address, bytes},
-        providers::{Provider, ProviderBuilder},
+        providers::{Provider, ProviderBuilder, ext::AnvilApi},
     };
     use tokio::sync::mpsc;
+    use tracing_subscriber::EnvFilter;
 
     use crate::{
         config::VaultFilter,
         lens::fetch_account,
         liquidation::{PreparedLiquidation, prepare_liquidation},
-        swap::{MulticallItem, SwapPayload, SwapQuote, SwapQuoteProvider},
+        swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuote, SwapQuoteProvider},
         transactions::execute_liquidation_queue,
         vaults::Vaults,
     };
@@ -713,6 +714,117 @@ mod test {
 
         // Give it some time to perform the liquidation.
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // Re-fetch the account to see its updated status.
+        let account = fetch_account(
+            provider.clone(),
+            &VaultFilter::default(),
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            violator,
+        )
+        .await
+        .unwrap();
+
+        // Check that they no longer have any debt.
+        assert!(account.debt.is_empty());
+    }
+
+    #[tokio::test]
+    async fn liquidation_with_swap_data() {
+        // This account is healthy at this block.
+        let block = 24935457;
+        let violator = address!("0x68A405Fbe0bC42a228baFdBdD27F17c15475352D");
+        let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
+
+        // Network (mainnet) specific configuration.
+        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
+        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+
+        // Fork the network at the block where this liquidation was present.
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        // Fetch the account.
+        let account = fetch_account(
+            provider.clone(),
+            &VaultFilter::default(),
+            vaults,
+            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            violator,
+        )
+        .await
+        .unwrap();
+
+        let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+
+        {
+            let provider = ProviderBuilder::new()
+                .wallet(network.wallet().unwrap())
+                .connect_http(network.endpoint_url());
+
+            tokio::spawn(async move {
+                execute_liquidation_queue(provider, liquidation_receiver, recipient).await;
+            });
+        }
+
+        // Sanity check, as we later also check this and then it will be empty.
+        assert!(!account.debt.is_empty());
+
+        let liquidation = prepare_liquidation(
+            &provider,
+            &EulerSwapApi::new("https://swap.euler.finance".parse().unwrap()),
+            1,
+            None, // This liquidation does not use any pyth oracles.
+            wrapped_native_asset,
+            liquidator_address,
+            // Since we mock the swap provider, this does not matter for us.
+            address!("0x2Bba09866b6F1025258542478C39720A09B728bF"),
+            network.wallet().unwrap().default_signer().address(),
+            account.clone(),
+        )
+        .await;
+
+        // Since we have not yet modified the oracle result, this should report as being healthy.
+        assert!(matches!(liquidation, Ok(None)));
+
+        // We override the oracle adapter to make this account unhealthy.
+        provider.anvil_set_code(address!("0x83b3b76873d36a28440cf53371df404c42497136"), bytes!("0x608060405234801561000f575f5ffd5b506004361061003f575f3560e01c80630579e61f1461004357806306fdde0314610074578063ae68676c14610092575b5f5ffd5b61005d60048036038101906100589190610232565b6100c2565b60405161006b929190610291565b60405180910390f35b61007c6100ff565b6040516100899190610328565b60405180910390f35b6100ac60048036038101906100a79190610232565b61013c565b6040516100b99190610348565b60405180910390f35b5f5f6040517f08c379a00000000000000000000000000000000000000000000000000000000081526004016100f6906103ab565b60405180910390fd5b60606040518060400160405280600a81526020017f4d6f636b4f7261636c6500000000000000000000000000000000000000000000815250905090565b5f732260fac5e5542a773aa44fbcfedf7c193bc2c59973ffffffffffffffffffffffffffffffffffffffff168373ffffffffffffffffffffffffffffffffffffffff1614610191576414f46b0400905061019a565b64174876e80090505b9392505050565b5f5ffd5b5f819050919050565b6101b7816101a5565b81146101c1575f5ffd5b50565b5f813590506101d2816101ae565b92915050565b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f610201826101d8565b9050919050565b610211816101f7565b811461021b575f5ffd5b50565b5f8135905061022c81610208565b92915050565b5f5f5f60608486031215610249576102486101a1565b5b5f610256868287016101c4565b93505060206102678682870161021e565b92505060406102788682870161021e565b9150509250925092565b61028b816101a5565b82525050565b5f6040820190506102a45f830185610282565b6102b16020830184610282565b9392505050565b5f81519050919050565b5f82825260208201905092915050565b8281835e5f83830152505050565b5f601f19601f8301169050919050565b5f6102fa826102b8565b61030481856102c2565b93506103148185602086016102d2565b61031d816102e0565b840191505092915050565b5f6020820190508181035f83015261034081846102f0565b905092915050565b5f60208201905061035b5f830184610282565b92915050565b7f4e6f7420696d706c656d656e74656400000000000000000000000000000000005f82015250565b5f610395600f836102c2565b91506103a082610361565b602082019050919050565b5f6020820190508181035f8301526103c281610389565b905091905056fea2646970667358221220534437302cf2579d8f3d2b01d3b25e913fc61310f84d4e1c8b03fa6f2308520864736f6c63430008210033")).await.unwrap();
+
+        let liquidation = prepare_liquidation(
+            &provider,
+            &EulerSwapApi::new("https://swap.euler.finance".parse().unwrap()),
+            1,
+            None, // This liquidation does not use any pyth oracles.
+            wrapped_native_asset,
+            liquidator_address,
+            // Since we mock the swap provider, this does not matter for us.
+            address!("0x2Bba09866b6F1025258542478C39720A09B728bF"),
+            network.wallet().unwrap().default_signer().address(),
+            account.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Send the liquidation to be executed.
+        liquidation_sender.send(liquidation).await.unwrap();
+
+        // Give it some time to perform the liquidation.
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
         // Re-fetch the account to see its updated status.
         let account = fetch_account(

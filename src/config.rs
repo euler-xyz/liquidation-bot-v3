@@ -1,4 +1,4 @@
-use alloy::{primitives::Address, signers::local::PrivateKeySigner};
+use alloy::primitives::Address;
 use anyhow::Result;
 use figment::{
     Figment,

@@ -161,7 +161,8 @@ pub async fn prepare_liquidation(
                         target_debt: U256::ZERO,
                         current_debt: max_repay,
                         swapper_mode: "0".to_string(),
-                        slippage: "0.5".to_string(),
+                        // TODO: Make this configurable.
+                        slippage: "5".to_string(),
                         // Deadline of 5 minutes into the future.
                         deadline: since_the_epoch
                             .saturating_add(Duration::from_mins(5))
