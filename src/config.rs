@@ -3,9 +3,13 @@ use anyhow::Result;
 use figment::{
     Figment,
     providers::{Env, Format, Toml},
+    util::map,
 };
 use reqwest::Url;
 use serde::Deserialize;
+use tracing::info;
+
+use crate::subgraph;
 
 #[derive(Deserialize, Clone, Default)]
 pub enum VaultFilterMode {
@@ -41,7 +45,10 @@ pub struct Config {
     pub rpc_url: Url,
 
     // The subgraph to get accounts from.
-    pub subgraph_url: Url,
+    pub subgraph_url_prefix: String,
+
+    // The subgraph to get accounts from.
+    pub subgraph_url_path: String,
 
     // The url of the Euler swap api.
     pub swap_url: Url,
@@ -91,8 +98,26 @@ pub struct Config {
 }
 
 pub fn get_config() -> Result<Config> {
-    Ok(Figment::new()
-        .merge(Toml::file("Config.toml"))
-        .merge(Env::prefixed("BOT_"))
-        .extract()?)
+    // Fetch what chain id we should be loading the config for.
+    let chain_id = std::env::var("CHAIN_ID")?;
+
+    // Fetch the RPC url for this chain id.
+    let rpc = match std::env::var(format!("RPC_URL_{}", chain_id)) {
+        Ok(url) => map!["rpc_url" => url],
+        Err(_) => map![],
+    };
+
+    // The file that will be used as the config file.
+    let config_file = format!("Config.{}.toml", chain_id);
+
+    let config: Config = Figment::new()
+        .merge(figment::providers::Serialized::from(&rpc, "default"))
+        .merge(Toml::file(config_file))
+        .merge(Env::raw())
+        .extract()?;
+
+    // Do a sanity check on the sugraph URL to make sure the two parts form a url.
+    let subgraph_url = Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;
+
+    Ok(config)
 }

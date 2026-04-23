@@ -383,10 +383,11 @@ pub async fn refresh_and_check_all(
     vaults: &mut Vaults,
     oracles: &OraclesCache,
 ) -> Result<Vec<Account>> {
+    let subgraph_url = Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;
     let provider_latest_block = provider.get_block_number().await?;
 
     // Fetch the latest indexed block.
-    let starting_block = fetch_latest_indexed_block(config.subgraph_url.clone())
+    let starting_block = fetch_latest_indexed_block(subgraph_url.clone())
         .await
         .map_err(|e| {
             anyhow!(
@@ -408,7 +409,7 @@ pub async fn refresh_and_check_all(
     }
 
     // fetch all accounts from the subgraph.
-    let accounts_to_fetch = fetch_list_of_accounts(config.subgraph_url, starting_block).await?;
+    let accounts_to_fetch = fetch_list_of_accounts(subgraph_url, starting_block).await?;
 
     info!("Re-syncing {} accounts", accounts_to_fetch.len());
 
