@@ -2,8 +2,9 @@
 #![cfg_attr(not(test), deny(clippy::expect_used))]
 
 use alloy::{
+    node_bindings::Anvil,
     primitives::{Address, FixedBytes, U256},
-    providers::{DynProvider, Provider, ProviderBuilder},
+    providers::{DynProvider, Provider, ProviderBuilder, ext::AnvilApi},
     signers::local::PrivateKeySigner,
 };
 use itertools::Itertools;
@@ -25,6 +26,7 @@ use crate::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
     },
     swap::EulerSwapApi,
+    transactions::execute_liquidation_queue,
     types::{Account, VaultAssetPosition, VaultDebtPosition},
     vaults::Vaults,
 };
@@ -122,31 +124,61 @@ async fn main() {
 
     let (liquidation_sender, mut liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
 
-    let liq_provider = provider.clone();
-    let profit_receiver = config.profit_receiver;
-    tokio::spawn(async move {
-        loop {
-            if let Some(liquidation) = liquidation_receiver.recv().await {
-                let transaction = liquidation.clone().into_transaction(profit_receiver);
-
-                info!(
-                    transaction =? transaction,
-                    "Recieved request to liquidate {}, potential profit {}",
-                    liquidation.account(),
-                    liquidation.profit()
-                );
-
-                // Simulate the transaction.
-                match liq_provider.call(transaction).await {
-                    Ok(ok) => {
-                        info!(ok =? ok, "Simulation ok!");
-                    }
-                    Err(err) => {
-                        error!("Issue simulating liquidation, err: {err}");
-                    }
-                };
-            }
+    // NOTE: For testing, we fork mainnet and have the bot use this fork.
+    // Fork the network at the block where this liquidation was present.
+    let network = match Anvil::new()
+        .fork(config.rpc_url.clone())
+        .fork_block_number(24969994)
+        .try_spawn()
+    {
+        Ok(network) => network,
+        Err(err) => {
+            error!("Could not fork the chain, err: {}", err);
+            return;
         }
+    };
+
+    let provider = ProviderBuilder::new()
+        .connect_http(network.endpoint_url())
+        .erased();
+
+    // Fund our EOA so we can execute transactions.
+    let _ = provider
+        .anvil_set_balance(config.eoa_address, U256::MAX)
+        .await;
+
+    // let liq_provider = provider.clone();
+    let liq_provider = ProviderBuilder::new()
+        .wallet(pk_signer)
+        .connect_http(network.endpoint_url());
+
+    let profit_receiver = config.profit_receiver;
+    // tokio::spawn(async move {
+    //     loop {
+    //         if let Some(liquidation) = liquidation_receiver.recv().await {
+    //             let transaction = liquidation.clone().into_transaction(profit_receiver);
+    //
+    //             info!(
+    //                 transaction =? transaction,
+    //                 "Recieved request to liquidate {}, potential profit {}",
+    //                 liquidation.account(),
+    //                 liquidation.profit()
+    //             );
+    //
+    //             // Simulate the transaction.
+    //             match liq_provider.call(transaction).await {
+    //                 Ok(ok) => {
+    //                     info!(ok =? ok, "Simulation ok!");
+    //                 }
+    //                 Err(err) => {
+    //                     error!("Issue simulating liquidation, err: {err}");
+    //                 }
+    //             };
+    //         }
+    //     }
+    // });
+    tokio::spawn(async move {
+        execute_liquidation_queue(liq_provider, liquidation_receiver, profit_receiver).await
     });
 
     // TODO: Actually start the thread to execute liquidations, currently not doing this as logging
@@ -358,7 +390,10 @@ pub async fn prepare_liquidations(
         )
         .await
         {
-            Ok(Some(liquidation)) => prepared.push(liquidation),
+            Ok(Some(liquidation)) => {
+                debug!("Found route to liquidate {}", account.address);
+                prepared.push(liquidation)
+            }
             Ok(None) => {
                 debug!(
                     "Was not able to find a route to liquidate {}",
@@ -416,6 +451,8 @@ pub async fn refresh_and_check_all(
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
     for account in accounts_to_fetch.iter().take(150) {
+        debug!("Loading {}", account);
+
         match fetch_account(
             provider.clone().erased(),
             &config.vault_filter,

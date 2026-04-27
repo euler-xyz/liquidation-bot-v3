@@ -47,6 +47,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                     "Transaction to liquidate {} is not profitable, skipping it.",
                     liquidation.account()
                 );
+                continue;
             }
 
             // NOTE: We do not wait for any extra confirmations as there is essentially no risk
