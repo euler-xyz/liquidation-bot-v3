@@ -1,0 +1,19 @@
+swap_url = "https://swap.euler.finance"
+subgraph_url_path = "subgraphs/euler-simple-base/latest/gn"
+evc_address = "0x5301c7dD20bD945D2013b48ed0DEE3A284ca8989"
+pyth_address = "0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a"
+swapper_address = "0x0D3d0F97eD816Ca3350D627AD8e57B6AD41774df"
+wrapped_native_asset_address = "0x4200000000000000000000000000000000000006"
+oracle_lens_address = "0xCE85cC424d12B8074bacB81c84dA7C6DA317c4D3"
+vault_lens_address = "0x601F023CD063324DdbCADa69460e969fb97e98b9"
+account_lens_address = "0xe6b05A38D6a29D2C8277fA1A8BA069F1693b780C"
+liquidator_address = "0x7608926d200d2a85dDB3a034ADb7D18fD2D5F3Cf"
+profit_receiver = "0x76D64c2918E84d3e359511014F2A1CfA2ee2F605"
+
+oracle_polling_interval_seconds = 30
+full_resync_and_check_interval_seconds = 3600 
+
+[vault_filter]
+mode = "Blacklist"
+items = ["0xdB6856e8478DB159c383a0c4b274E259AF83cB15"]
+
