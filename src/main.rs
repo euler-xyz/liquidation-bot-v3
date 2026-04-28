@@ -122,10 +122,9 @@ async fn main() {
         });
     }
 
-    let (liquidation_sender, mut liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+    let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
 
     // NOTE: For testing, we fork mainnet and have the bot use this fork.
-    // Fork the network at the block where this liquidation was present.
     let network = match Anvil::new()
         .fork(config.rpc_url.clone())
         .fork_block_number(24969994)
@@ -623,7 +622,6 @@ mod test {
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
     };
     use tokio::sync::mpsc;
-    use tracing_subscriber::EnvFilter;
 
     use crate::{
         config::VaultFilter,
@@ -697,12 +695,20 @@ mod test {
         let network = Anvil::new()
             .fork(mainnet_rpc)
             .fork_block_number(block)
+            .arg("--disable-min-priority-fee")
             .try_spawn()
             .unwrap();
 
         let provider = ProviderBuilder::new()
             .connect_http(network.endpoint_url())
             .erased();
+
+        // We set the gas fee for the next block to be very low so the liquidation is always
+        // profitable.
+        provider
+            .anvil_set_next_block_base_fee_per_gas(100)
+            .await
+            .unwrap();
 
         // Fetch the account.
         let account = fetch_account(
@@ -751,7 +757,7 @@ mod test {
         liquidation_sender.send(liquidation).await.unwrap();
 
         // Give it some time to perform the liquidation.
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        wait_for_next_block(&provider, Some(block)).await;
 
         // Re-fetch the account to see its updated status.
         let account = fetch_account(
@@ -788,6 +794,7 @@ mod test {
         let network = Anvil::new()
             .fork(mainnet_rpc)
             .fork_block_number(block)
+            .arg("--disable-min-priority-fee")
             .try_spawn()
             .unwrap();
 
@@ -862,7 +869,7 @@ mod test {
         liquidation_sender.send(liquidation).await.unwrap();
 
         // Give it some time to perform the liquidation.
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        wait_for_next_block(&provider, Some(block)).await;
 
         // Re-fetch the account to see its updated status.
         let account = fetch_account(
@@ -878,5 +885,41 @@ mod test {
 
         // Check that they no longer have any debt.
         assert!(account.debt.is_empty());
+    }
+
+    /// Waits up to 30 seconds for a new block to be mined, polling once per second.
+    /// Panics if no new block is mined within the timeout. Intended for use in tests.
+    pub async fn wait_for_next_block<P: Provider>(provider: &P, current_block: Option<u64>) {
+        let start_block = match current_block {
+            Some(block) => block,
+            None => provider
+                .get_block_number()
+                .await
+                .expect("failed to get starting block number"),
+        };
+
+        for i in 0..30 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+            let current_block = provider
+                .get_block_number()
+                .await
+                .expect("failed to get current block number");
+
+            if current_block > start_block {
+                tracing::info!(
+                    "TEST: new block mined after {}s: {} -> {}",
+                    i + 1,
+                    start_block,
+                    current_block
+                );
+                return;
+            }
+        }
+
+        panic!(
+            "no new block was mined within 30 seconds (still at block {})",
+            start_block
+        );
     }
 }

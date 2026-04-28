@@ -1,6 +1,8 @@
 use anyhow::{Error, Result};
 
 use alloy::{primitives::Address, providers::DynProvider, sol};
+use tokio::time::Instant;
+use tracing::debug;
 
 use crate::{
     Vaults,
@@ -114,11 +116,16 @@ pub async fn fetch_account(
     account: Address,
 ) -> Result<Account, FetchAccountError> {
     let lens = AccountLens::new(lens, &provider);
+
+    //
+    let start = Instant::now();
     let result = lens
         .getAccountEnabledVaultsInfo(evc, account)
         .call()
         .await
         .map_err(|e| FetchAccountError::Other(e.into()))?;
+
+    debug!("Took {:?}", start.elapsed());
 
     let mut debt = Vec::new();
     let mut assets = Vec::new();
@@ -134,7 +141,7 @@ pub async fn fetch_account(
                 vault: vaults
                     .get_or_fetch(&provider, v.vault)
                     .await
-                    .map_err(|e| FetchAccountError::Other(e.into()))?,
+                    .map_err(FetchAccountError::Other)?,
             });
         }
 
@@ -144,7 +151,7 @@ pub async fn fetch_account(
                 vault: vaults
                     .get_or_fetch(&provider, v.vault)
                     .await
-                    .map_err(|e| FetchAccountError::Other(e.into()))?,
+                    .map_err(FetchAccountError::Other)?,
             });
         }
     }

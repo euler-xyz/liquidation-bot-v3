@@ -15,6 +15,11 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
 ) {
     loop {
         if let Some(liquidation) = queue.recv().await {
+            info!(
+                "received request to liquidate account {}",
+                liquidation.account()
+            );
+
             // Build the transaction.
             let tx = liquidation.clone().into_transaction(profit_receiver);
 
