@@ -51,16 +51,16 @@ pub struct SwapApiResponse {
     pub success: bool,
     pub message: Option<String>,
     pub data: Option<Value>,
-    pub status_code: u16,
+    // pub status_code: u16,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwapQuote {
-    pub amount_in: U256,
-    pub amount_in_max: U256,
+    // pub amount_in: U256,
+    // pub amount_in_max: U256,
     pub amount_out: U256,
-    pub amount_out_min: U256,
+    // pub amount_out_min: U256,
     // pub account_in: Address,
     // pub account_out: Address,
     // pub vault_in: Address,
@@ -76,14 +76,14 @@ pub struct SwapQuote {
     // pub transfer_output_to_receiver: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Token {
-    chain_id: U256,
-    address: Address,
-    name: String,
-    decimals: u16,
-}
+// #[derive(Debug, Clone, Deserialize)]
+// #[serde(rename_all = "camelCase")]
+// pub struct Token {
+//     chain_id: U256,
+//     address: Address,
+//     name: String,
+//     decimals: u16,
+// }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

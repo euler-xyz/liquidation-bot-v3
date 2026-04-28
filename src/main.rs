@@ -146,11 +146,7 @@ async fn main() {
     let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
 
     // NOTE: For testing, we fork mainnet and have the bot use this fork.
-    let network = match Anvil::new()
-        .fork(config.rpc_url.clone())
-        .fork_block_number(24969994)
-        .try_spawn()
-    {
+    let network = match Anvil::new().fork(config.rpc_url.clone()).try_spawn() {
         Ok(network) => network,
         Err(err) => {
             error!("Could not fork the chain, err: {}", err);
@@ -162,48 +158,15 @@ async fn main() {
         .wallet(pk_signer)
         .connect_http(network.endpoint_url());
 
-    // let provider = ProviderBuilder::new()
-    //     .connect_http(network.endpoint_url())
-    //     .erased();
-
     // Fund our EOA so we can execute transactions.
     let _ = liq_provider
         .anvil_set_balance(config.eoa_address, U256::MAX)
         .await;
 
-    // let liq_provider = provider.clone();
-
     let profit_receiver = config.profit_receiver;
-    // tokio::spawn(async move {
-    //     loop {
-    //         if let Some(liquidation) = liquidation_receiver.recv().await {
-    //             let transaction = liquidation.clone().into_transaction(profit_receiver);
-    //
-    //             info!(
-    //                 transaction =? transaction,
-    //                 "Recieved request to liquidate {}, potential profit {}",
-    //                 liquidation.account(),
-    //                 liquidation.profit()
-    //             );
-    //
-    //             // Simulate the transaction.
-    //             match liq_provider.call(transaction).await {
-    //                 Ok(ok) => {
-    //                     info!(ok =? ok, "Simulation ok!");
-    //                 }
-    //                 Err(err) => {
-    //                     error!("Issue simulating liquidation, err: {err}");
-    //                 }
-    //             };
-    //         }
-    //     }
-    // });
     tokio::spawn(async move {
         execute_liquidation_queue(liq_provider, liquidation_receiver, profit_receiver).await
     });
-
-    // TODO: Actually start the thread to execute liquidations, currently not doing this as logging
-    // is fine for now.
 
     // Start the liquidation bot.
     run(
@@ -665,10 +628,10 @@ mod test {
             // This is the quote to repay the debt.
             if params.token_out == address!("0xe868084cf08f3c3db11f4b73a95473762d9463f7") {
                 return Ok(Some(SwapQuote {
-                    amount_in: U256::from_str("30_000_000_000_000_000_000").unwrap(),
-                    amount_in_max: U256::from_str("30_000_000_000_000_000_000").unwrap(),
+                    // amount_in: U256::from_str("30_000_000_000_000_000_000").unwrap(),
+                    // amount_in_max: U256::from_str("30_000_000_000_000_000_000").unwrap(),
                     amount_out: U256::from_str("28804086892330053632").unwrap(),
-                    amount_out_min: U256::from_str("28804086892330053632").unwrap(),
+                    // amount_out_min: U256::from_str("28804086892330053632").unwrap(),
                     swap: SwapPayload {
                         // This data is form the actual on-chain liquidation.
                         multicall_items: [
@@ -684,11 +647,11 @@ mod test {
 
             // This is the check of what profit the bot would be making.
             Ok(Some(SwapQuote {
-                amount_in: U256::ZERO,
-                amount_in_max: U256::ZERO,
+                // amount_in: U256::ZERO,
+                // amount_in_max: U256::ZERO,
                 // Roughly $0.03
                 amount_out: U256::from_str("15000000000000").unwrap(),
-                amount_out_min: U256::from_str("15000000000000").unwrap(),
+                // amount_out_min: U256::from_str("15000000000000").unwrap(),
                 swap: SwapPayload {
                     // This swap will not be executed on-chain so we do not need to give the data
                     // for it.
@@ -807,7 +770,6 @@ mod test {
         // Network (mainnet) specific configuration.
         let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
 
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");

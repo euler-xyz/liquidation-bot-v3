@@ -4,7 +4,7 @@ use alloy::{primitives::Address, providers::DynProvider, sol};
 
 use crate::{
     liquidation::get_shares_to_underlying,
-    types::{LTV, Vault},
+    types::{Ltv, Vault},
 };
 use anyhow::{Context, Result};
 
@@ -109,7 +109,7 @@ impl Vaults {
                         .map(|ltv| {
                             (
                                 ltv.collateral,
-                                LTV {
+                                Ltv {
                                     asset: ltv.collateral,
                                     liquidation: ltv.liquidationLTV,
                                 },

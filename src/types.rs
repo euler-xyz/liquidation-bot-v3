@@ -11,11 +11,11 @@ pub struct Vault {
     pub supply_interest_rate: (),
     pub shares_to_underlying_ratio: U256,
     pub adapter: Address,
-    pub ltvs: HashMap<Address, LTV>,
+    pub ltvs: HashMap<Address, Ltv>,
 }
 
 #[derive(Clone, Debug)]
-pub struct LTV {
+pub struct Ltv {
     pub asset: Address,
     pub liquidation: U256,
 }

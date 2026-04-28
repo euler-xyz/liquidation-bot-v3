@@ -514,14 +514,12 @@ mod test {
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
 
-        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
         let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
         let oracles = OraclesCache::new(oracle_lens, pyth_address);
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
 
         // Fetch an account.
         let account = fetch_account(

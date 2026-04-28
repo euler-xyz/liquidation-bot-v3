@@ -59,7 +59,7 @@ pub struct TrackingVaultBalancesResponseItem {
     pub vault: Address,
     pub balance: U256,
     pub debt: U256,
-    pub address_prefix: FixedBytes<19>,
+    // pub address_prefix: FixedBytes<19>,
 }
 
 #[derive(Deserialize, Debug)]

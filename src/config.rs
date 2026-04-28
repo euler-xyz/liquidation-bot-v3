@@ -7,9 +7,6 @@ use figment::{
 };
 use reqwest::Url;
 use serde::Deserialize;
-use tracing::info;
-
-use crate::subgraph;
 
 #[derive(Deserialize, Clone, Default)]
 pub enum VaultFilterMode {
@@ -117,7 +114,7 @@ pub fn get_config() -> Result<Config> {
         .extract()?;
 
     // Do a sanity check on the sugraph URL to make sure the two parts form a url.
-    let subgraph_url = Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;
+    Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;
 
     Ok(config)
 }

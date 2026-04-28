@@ -50,7 +50,7 @@ impl OraclesCache {
         // Filter out the ones where we already have a price.
         let new_ids: Vec<OracleIdentifier> = ids
             .iter()
-            .filter(|id| self.active_oracles.insert(id.clone().clone()))
+            .filter(|id| self.active_oracles.insert((*id).clone()))
             .cloned()
             .collect();
 
@@ -515,7 +515,7 @@ mod test {
             .erased();
 
         let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, MAINNET_PYTH);
-        let price = oracles
+        oracles
             .fetch_latest_price(&provider, oracle.clone())
             .await
             .unwrap();

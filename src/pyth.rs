@@ -12,37 +12,37 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 struct PythResponse {
     pub binary: BinaryData,
-    pub parsed: Vec<ParsedPriceFeed>,
+    // pub parsed: Vec<ParsedPriceFeed>,
 }
 
 #[derive(Debug, Deserialize)]
 struct BinaryData {
-    pub encoding: String,
+    // pub encoding: String,
     pub data: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ParsedPriceFeed {
-    pub id: String,
-    pub price: PriceInfo,
-    pub ema_price: PriceInfo,
-    pub metadata: FeedMetadata,
-}
+// #[derive(Debug, Deserialize)]
+// struct ParsedPriceFeed {
+//     pub id: String,
+//     pub price: PriceInfo,
+//     pub ema_price: PriceInfo,
+//     // pub metadata: FeedMetadata,
+// }
+//
+// #[derive(Debug, Deserialize)]
+// pub struct PriceInfo {
+//     pub price: U256,
+//     pub conf: U256,
+//     pub expo: i32,
+//     pub publish_time: i64,
+// }
 
-#[derive(Debug, Deserialize)]
-pub struct PriceInfo {
-    pub price: U256,
-    pub conf: U256,
-    pub expo: i32,
-    pub publish_time: i64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct FeedMetadata {
-    pub slot: u64,
-    pub proof_available_time: i64,
-    pub prev_publish_time: i64,
-}
+// #[derive(Debug, Deserialize)]
+// pub struct FeedMetadata {
+//     pub slot: u64,
+//     pub proof_available_time: i64,
+//     pub prev_publish_time: i64,
+// }
 #[derive(Debug, Clone)]
 pub struct PythFeedInput {
     pub data: Vec<Bytes>,
@@ -70,7 +70,7 @@ sol! {
     }
 }
 
-pub async fn fetch_pyth(ids: Vec<FixedBytes<32>>) -> Result<PythResponse> {
+async fn fetch_pyth(ids: Vec<FixedBytes<32>>) -> Result<PythResponse> {
     let request_url = format!(
         "https://hermes.pyth.network/v2/updates/price/latest?ids[]={}",
         ids.iter().format("&ids[]=")
