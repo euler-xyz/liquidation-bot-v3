@@ -85,6 +85,27 @@ async fn main() {
     // Build the provider.
     let provider = ProviderBuilder::new().connect_http(config.rpc_url.clone());
 
+    // Do a sanity check that the configured chain id is also the chain id of the provider.
+    match provider.get_chain_id().await {
+        Ok(id) if id == config.chain_id => {
+            // Valid!
+        }
+        Ok(id) => {
+            error!(
+                "The configured RPC for chain id {} is invalid, it is a RPC for {}",
+                config.chain_id, id
+            );
+            return;
+        }
+        Err(err) => {
+            error!(
+                "Could not fetch the chain id for {} when attempting to do a sanity check, err: {}",
+                config.chain_id, err
+            );
+            return;
+        }
+    };
+
     // Our singleton vault store.
     let vaults = Vaults::new(config.vault_lens_address);
     let accounts = AccountsTracker::new();
@@ -137,19 +158,20 @@ async fn main() {
         }
     };
 
-    let provider = ProviderBuilder::new()
-        .connect_http(network.endpoint_url())
-        .erased();
+    let liq_provider = ProviderBuilder::new()
+        .wallet(pk_signer)
+        .connect_http(network.endpoint_url());
+
+    // let provider = ProviderBuilder::new()
+    //     .connect_http(network.endpoint_url())
+    //     .erased();
 
     // Fund our EOA so we can execute transactions.
-    let _ = provider
+    let _ = liq_provider
         .anvil_set_balance(config.eoa_address, U256::MAX)
         .await;
 
     // let liq_provider = provider.clone();
-    let liq_provider = ProviderBuilder::new()
-        .wallet(pk_signer)
-        .connect_http(network.endpoint_url());
 
     let profit_receiver = config.profit_receiver;
     // tokio::spawn(async move {
