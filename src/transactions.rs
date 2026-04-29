@@ -16,6 +16,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
     loop {
         if let Some(liquidation) = queue.recv().await {
             info!(
+                account =? liquidation.account(),
                 "received request to liquidate account {}",
                 liquidation.account()
             );
@@ -39,7 +40,10 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             let gas_usage = match provider.estimate_gas(tx.clone()).await {
                 Ok(usage) => usage,
                 Err(err) => {
-                    error!("Error simulating liquidation, err: {}", err);
+                    error!(
+                        account =? liquidation.account(),
+                        "Error simulating liquidation, err: {}", err
+                    );
                     continue;
                 }
             };
@@ -48,6 +52,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             let cost = u128::from(gas_usage) * gas_price;
             if U256::from(cost) > liquidation.profit() {
                 info!(
+                    account =? liquidation.account(),
                     gas_price, gas_usage, cost = cost, profit =? liquidation.profit(),
                     "Transaction to liquidate {} is not profitable, skipping it.",
                     liquidation.account()
@@ -60,7 +65,11 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             let tx = match provider.send_transaction(tx).await {
                 Ok(tx) => tx.get_receipt().await,
                 Err(err) => {
-                    error!("Issue sending transaction, err: {}", err);
+                    error!(
+                        account =? liquidation.account(),
+                        "Issue sending transaction, err: {}",
+                        err
+                    );
                     continue;
                 }
             };
@@ -68,6 +77,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             match tx {
                 Ok(receipt) => {
                     info!(
+                        account =? liquidation.account(),
                         "Account {} liquidation succeeded, transaction hash {} included",
                         liquidation.account(),
                         receipt.transaction_hash
@@ -75,6 +85,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 }
                 Err(err) => {
                     error!(
+                        account =? liquidation.account(),
                         "Error while waiting for liquidation transaction receipt, err: {}",
                         err
                     );
