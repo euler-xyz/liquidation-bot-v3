@@ -145,27 +145,41 @@ async fn main() {
 
     let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
 
-    // NOTE: For testing, we fork mainnet and have the bot use this fork.
-    let network = match Anvil::new().fork(config.rpc_url.clone()).try_spawn() {
-        Ok(network) => network,
-        Err(err) => {
-            error!("Could not fork the chain, err: {}", err);
-            return;
+    // If the config specifies we should be running in simulation mode then we configure an anvil
+    // fork for transaction settlement, otherwise we use the mainnet rpc.
+    let (liquidation_provider, _network) = match config.simulation_mode {
+        true => {
+            info!("Running in simulation mode, all transactions will be settled on an anvil fork");
+            let network = match Anvil::new().fork(config.rpc_url.clone()).try_spawn() {
+                Ok(network) => network,
+                Err(err) => {
+                    error!("Could not fork the chain, err: {}", err);
+                    return;
+                }
+            };
+
+            let provider = ProviderBuilder::new()
+                .wallet(pk_signer)
+                .connect_http(network.endpoint_url());
+
+            // Fund the EOA wallet.
+            let _ = provider
+                .anvil_set_balance(config.eoa_address, U256::MAX)
+                .await;
+
+            (provider, Some(network))
         }
+        false => (
+            ProviderBuilder::new()
+                .wallet(pk_signer)
+                .connect_http(config.rpc_url.clone()),
+            None,
+        ),
     };
-
-    let liq_provider = ProviderBuilder::new()
-        .wallet(pk_signer)
-        .connect_http(network.endpoint_url());
-
-    // Fund our EOA so we can execute transactions.
-    let _ = liq_provider
-        .anvil_set_balance(config.eoa_address, U256::MAX)
-        .await;
 
     let profit_receiver = config.profit_receiver;
     tokio::spawn(async move {
-        execute_liquidation_queue(liq_provider, liquidation_receiver, profit_receiver).await
+        execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
     });
 
     // Start the liquidation bot.
@@ -434,7 +448,7 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter().take(150) {
+    for account in accounts_to_fetch.iter() {
         debug!("Loading {}", account);
 
         match fetch_account(

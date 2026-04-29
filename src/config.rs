@@ -1,3 +1,5 @@
+use std::default;
+
 use alloy::primitives::Address;
 use anyhow::Result;
 use figment::{
@@ -88,6 +90,10 @@ pub struct Config {
 
     // At what interval should we re-sync all accounts and check their health.
     pub full_resync_and_check_interval_seconds: u64,
+
+    // If enabled we will be forking the chain and processing the liquidations on the fork.
+    #[serde(default)]
+    pub simulation_mode: bool,
 
     #[serde(default)]
     // Lets the config specify in what mode the filter is operating and what to filter.
