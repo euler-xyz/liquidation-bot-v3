@@ -9,7 +9,7 @@ use alloy::{
 };
 use itertools::Itertools;
 use reqwest::Url;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -108,7 +108,7 @@ async fn main() {
 
     // Our singleton vault store.
     let vaults = Vaults::new(config.vault_lens_address);
-    let accounts = AccountsTracker::new();
+    let accounts = Arc::new(AccountsTracker::new());
     let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
 
     let (account_events_sender, account_events_receiver) = mpsc::channel::<Address>(100);
@@ -201,7 +201,7 @@ pub async fn run(
     config: Config,
     provider: &DynProvider,
 
-    mut accounts: AccountsTracker,
+    accounts: Arc<AccountsTracker>,
     mut vaults: Vaults,
     oracles: OraclesCache,
 
@@ -223,7 +223,7 @@ pub async fn run(
             _ = resync_interval.tick() => {
                 info!("Syncing all accounts and checking the health for each of them.");
 
-                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &mut accounts, &mut vaults, &oracles).await {
+                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &mut vaults, &oracles).await {
                     Ok(unhealthy_accounts) => unhealthy_accounts,
                     Err(e) => {
                         tracing::error!("Error while refreshing, err:{}", e);
@@ -258,7 +258,6 @@ pub async fn run(
 
                 let unhealthy_accounts: Vec<_> = accounts_affected
                     .iter()
-                    // NOTE: Errors regarding missing oracles get hidden here by the `.ok()`
                     .filter(|a| {
                         match a.calculate_health(&oracles) {
                             Ok(health) => {
@@ -412,7 +411,7 @@ pub async fn prepare_liquidations(
 pub async fn refresh_and_check_all(
     provider: &DynProvider,
     config: Config,
-    accounts: &mut AccountsTracker,
+    accounts: &Arc<AccountsTracker>,
     vaults: &mut Vaults,
     oracles: &OraclesCache,
 ) -> Result<Vec<Account>> {
@@ -906,7 +905,7 @@ mod test {
 
             if current_block > start_block {
                 tracing::info!(
-                    "TEST: new block mined after {}s: {} -> {}",
+                    "test: new block mined after {}s: {} -> {}",
                     i + 1,
                     start_block,
                     current_block

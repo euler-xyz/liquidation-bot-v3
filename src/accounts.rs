@@ -1,27 +1,27 @@
 use alloy::primitives::Address;
+use dashmap::DashMap;
 use itertools::Itertools;
-use std::collections::HashMap;
 use tracing::error;
 
 use crate::types::{Account, OracleIdentifier, VaultAssetPosition, VaultDebtPosition};
 
 pub struct AccountsTracker {
-    accounts: HashMap<Address, Account>,
+    accounts: DashMap<Address, Account>,
     /// Maps the accounts that are dependent on a oracle.
-    oracle_dependents: HashMap<OracleIdentifier, Vec<Address>>,
+    oracle_dependents: DashMap<OracleIdentifier, Vec<Address>>,
 }
 
 impl AccountsTracker {
     pub fn new() -> Self {
         AccountsTracker {
-            accounts: HashMap::new(),
-            oracle_dependents: HashMap::new(),
+            accounts: DashMap::new(),
+            oracle_dependents: DashMap::new(),
         }
     }
 
     /// Add a new account to the tracker.
     pub fn add_as_account(
-        &mut self,
+        &self,
         address: Address,
         assets: Vec<VaultAssetPosition>,
         debt: Vec<VaultDebtPosition>,
@@ -33,7 +33,7 @@ impl AccountsTracker {
         });
     }
 
-    pub fn add(&mut self, account: Account) {
+    pub fn add(&self, account: Account) {
         // Skip accounts that have no debt, these are not of interest to us.
         // TODO: Check if we are already tracking this account and this was intended as an update,
         // if so we remove the account.
@@ -42,8 +42,8 @@ impl AccountsTracker {
         }
 
         account.dependent_on().iter().for_each(|o| {
-            let od = self.oracle_dependents.entry(o.clone()).or_default();
-            od.push(account.address);
+            let mut od = self.oracle_dependents.entry(o.clone()).or_default();
+            od.value_mut().push(account.address);
         });
 
         let _ = self.accounts.insert(account.address, account);
@@ -51,14 +51,18 @@ impl AccountsTracker {
 
     /// Get all unique oracle identifiers.
     pub fn get_oracle_identifiers(&self) -> Vec<OracleIdentifier> {
-        self.oracle_dependents.keys().cloned().collect()
+        self.oracle_dependents
+            .iter()
+            .map(|od| od.key().clone())
+            .collect()
     }
 
     /// Finds the accounts that are impacted when a specific oracle price changes.
     pub fn get_impacted_accounts(&self, oracle: &OracleIdentifier) -> Vec<Account> {
         self.oracle_dependents
             .get(oracle)
-            .unwrap_or(&vec![])
+            .map(|od| od.value().clone())
+            .unwrap_or(vec![])
             .iter()
             .filter_map(|a| {
                 match self.accounts.get(a) {
@@ -76,7 +80,7 @@ impl AccountsTracker {
     pub fn get_bulk_impacted_accounts(&self, oracles: Vec<OracleIdentifier>) -> Vec<Account> {
         oracles
             .iter()
-            .flat_map(|o| self.oracle_dependents.get(o).cloned().unwrap_or(vec![]))
+            .flat_map(|o| self.oracle_dependents.get(o).map(|od| od.value().clone()).unwrap_or(vec![]))
             .unique()
             .filter_map(|a| {
                 match self.accounts.get(&a) {
@@ -91,7 +95,7 @@ impl AccountsTracker {
     }
 
     pub fn all_accounts(&self) -> Vec<Account> {
-        self.accounts.values().cloned().collect()
+        self.accounts.iter().map(|a| a.clone()).collect()
     }
 }
 
