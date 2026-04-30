@@ -6,6 +6,7 @@ use alloy::{
     sol_types::SolEvent,
 };
 use anyhow::{Result, bail};
+use serde::Serialize;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, time};
 use tracing::{debug, error, info};
@@ -15,7 +16,7 @@ use crate::{
     types::{Account, OracleIdentifier, Vault},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AccountSolvency {
     pub account: Address,
     pub asset_value: U256,

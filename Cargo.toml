@@ -17,3 +17,4 @@ backon = { version = "1.6.0", features = ["tokio"]}
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dashmap = "6.1.0"
+axum = "0.8.9"

@@ -17,6 +17,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     account::watch_chain_for_accounts_from_latest,
     accounts::AccountsTracker,
+    api::{BotState, serve},
     config::{Config, get_config},
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
@@ -34,6 +35,7 @@ use anyhow::{Result, anyhow};
 
 mod account;
 mod accounts;
+mod api;
 mod config;
 mod lens;
 mod liquidation;
@@ -180,6 +182,16 @@ async fn main() {
     let profit_receiver = config.profit_receiver;
     tokio::spawn(async move {
         execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
+    });
+
+    // Start the observability api.
+    let state = BotState {
+        accounts: accounts.clone(),
+        oracles: oracles.clone(),
+    };
+
+    tokio::spawn(async move {
+        serve(state).await;
     });
 
     // Start the liquidation bot.
@@ -447,7 +459,7 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter() {
+    for account in accounts_to_fetch.iter().take(150) {
         debug!("Loading {}", account);
 
         match fetch_account(
