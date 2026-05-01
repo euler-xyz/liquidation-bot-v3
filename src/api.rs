@@ -1,7 +1,9 @@
-use std::sync::Arc;
-
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use http::Method;
 use serde::Serialize;
+use std::sync::Arc;
+use tower::{Service, ServiceBuilder, ServiceExt};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 use crate::{
@@ -16,10 +18,18 @@ pub struct BotState {
 }
 
 pub async fn serve(state: BotState) {
+    let cors = CorsLayer::new()
+        // allow `GET` and `POST` when accessing the resource
+        .allow_methods([Method::GET, Method::POST])
+        // allow requests from any origin
+        .allow_origin(Any);
+
     // build our application with a single route
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
+        .route("/health", get(health))
         .route("/accounts", get(get_accounts))
+        .layer(ServiceBuilder::new().layer(cors))
         .with_state(state);
 
     // run our app with hyper, listening globally on port 3000
@@ -44,6 +54,17 @@ pub async fn serve(state: BotState) {
             tracing::error!("Issue when serving observability API, err: {}", err);
         }
     };
+}
+
+#[derive(Serialize)]
+enum BotHealth {
+    Healthy,
+    Syncing,
+    Error(String),
+}
+
+async fn health(State(state): State<BotState>) -> (StatusCode, Json<BotHealth>) {
+    (StatusCode::OK, Json(BotHealth::Healthy))
 }
 
 #[derive(Serialize)]
