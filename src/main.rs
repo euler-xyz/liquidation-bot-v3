@@ -49,7 +49,7 @@ mod vaults;
 async fn main() {
     // Configure tracing.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
+        .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=info"))
         .init();
 
     // Load the bot configuration.
