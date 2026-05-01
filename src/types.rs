@@ -21,7 +21,7 @@ pub struct Ltv {
     pub liquidation: U256,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize)]
 pub struct OracleIdentifier {
     pub base_asset: Address,
     pub quote_asset: Address,

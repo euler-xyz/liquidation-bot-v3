@@ -8,6 +8,7 @@ use alloy::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use dashmap::{DashMap, DashSet};
+use serde::Serialize;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 
@@ -193,6 +194,24 @@ impl OraclesCache {
             )
         })
     }
+
+    pub fn all(&self) -> Vec<OracleInformation> {
+        self.oracles
+            .iter()
+            .map(|o| OracleInformation {
+                identifier: o.key().clone(),
+                oracle: o.value().clone(),
+                price: self.prices.get(o.key()).map(|p| *p.value()),
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OracleInformation {
+    pub identifier: OracleIdentifier,
+    pub oracle: Oracle,
+    pub price: Option<U256>,
 }
 
 #[derive(Debug, Clone)]
@@ -438,14 +457,14 @@ impl Oracle {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Oracle {
     name: String,
     address: Address,
     oracle_type: OracleType,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub enum OracleType {
     // This is a pyth push oracle, it requires us to update the price onchain.
     Pyth {
