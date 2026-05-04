@@ -459,7 +459,7 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter().take(150) {
+    for account in accounts_to_fetch.iter() {
         debug!("Loading {}", account);
 
         match fetch_account(
