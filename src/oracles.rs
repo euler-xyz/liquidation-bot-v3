@@ -7,8 +7,11 @@ use alloy::{
     sol,
 };
 use anyhow::{Context, Result, anyhow, bail};
+use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_with::TimestampSeconds;
+use serde_with::serde_as;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 
@@ -32,7 +35,7 @@ pub struct OraclesCache {
     oracles: Arc<DashMap<OracleIdentifier, Oracle>>,
 
     // The oracle outputs.
-    prices: Arc<DashMap<OracleIdentifier, U256>>,
+    prices: Arc<DashMap<OracleIdentifier, OracleOutput>>,
 }
 
 impl OraclesCache {
@@ -82,7 +85,7 @@ impl OraclesCache {
     /// Calculates the quote based on the most recent price.
     pub fn get_quote(&self, oracle: &OracleIdentifier, amount: U256) -> Result<U256> {
         let price = match self.prices.get(oracle) {
-            Some(price) => *price.value(),
+            Some(price) => price.value().price,
             None => {
                 match self.active_oracles.insert(oracle.clone()) {
                     false => {
@@ -115,7 +118,7 @@ impl OraclesCache {
         &self,
         provider: &DynProvider,
         id: OracleIdentifier,
-    ) -> Result<U256> {
+    ) -> Result<OracleOutput> {
         // Fetch the price.
         let price = match self.fetch_price(provider, id.clone()).await {
             Ok(price) => price,
@@ -127,15 +130,35 @@ impl OraclesCache {
             }
         };
 
+        let new_price = match self.prices.get(&id) {
+            // We had a prev price and it has changed since last check.
+            Some(prev) if prev.price == price => OracleOutput {
+                price,
+                last_polled_at: Utc::now(),
+                last_changed_at: Utc::now(),
+            },
+
+            // We did have a previous price but it has not changed since.
+            Some(prev) => OracleOutput {
+                price,
+                last_polled_at: Utc::now(),
+                last_changed_at: prev.last_changed_at,
+            },
+
+            None => {
+                // We did not have a previous price.
+                self.active_oracles.insert(id.clone());
+                OracleOutput {
+                    price,
+                    last_polled_at: Utc::now(),
+                    last_changed_at: Utc::now(),
+                }
+            }
+        };
+
         // Cache the price.
-        let old_price = self.prices.insert(id.clone(), price);
-
-        // If we did not have a price before we make sure we are tracking this oracle.
-        if old_price.is_none() {
-            self.active_oracles.insert(id);
-        }
-
-        Ok(price)
+        self.prices.insert(id.clone(), new_price.clone());
+        Ok(new_price)
     }
 
     /// Get the oracles that are actively being used.
@@ -201,7 +224,7 @@ impl OraclesCache {
             .map(|o| OracleInformation {
                 identifier: o.key().clone(),
                 oracle: o.value().clone(),
-                price: self.prices.get(o.key()).map(|p| *p.value()),
+                price: self.prices.get(o.key()).map(|p| p.value().clone()),
             })
             .collect()
     }
@@ -211,7 +234,7 @@ impl OraclesCache {
 pub struct OracleInformation {
     pub identifier: OracleIdentifier,
     pub oracle: Oracle,
-    pub price: Option<U256>,
+    pub price: Option<OracleOutput>,
 }
 
 #[derive(Debug, Clone)]
@@ -220,10 +243,19 @@ pub struct OracleChange {
     pub price: U256,
 }
 
-struct OracleOutput {
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleOutput {
+    // The price as outputted by the oracle.
     price: U256,
-    last_polled_at: (),
-    last_changed_at: (),
+
+    // Most recent succesfull check of the price.
+    #[serde_as(as = "TimestampSeconds<i64>")]
+    last_polled_at: DateTime<Utc>,
+
+    // Last price change that we have seen.
+    #[serde_as(as = "TimestampSeconds<i64>")]
+    last_changed_at: DateTime<Utc>,
 }
 
 pub async fn poll_oracles(
@@ -266,7 +298,17 @@ pub async fn poll_oracles(
 
             match prev {
                 // If the price did not change.
-                Some(prev) if prev.price == new_price => {
+                Some(prev) if prev.price == new_price.price => {
+                    // Update out store.
+                    prices.insert(
+                        oracle.clone(),
+                        OracleOutput {
+                            price: prev.price,
+                            last_polled_at: Utc::now(),
+                            last_changed_at: prev.last_changed_at,
+                        },
+                    );
+
                     continue;
                 }
                 _ => {
@@ -282,16 +324,16 @@ pub async fn poll_oracles(
                     prices.insert(
                         oracle.clone(),
                         OracleOutput {
-                            price: new_price,
-                            last_polled_at: (),
-                            last_changed_at: (),
+                            price: new_price.price,
+                            last_polled_at: Utc::now(),
+                            last_changed_at: Utc::now(),
                         },
                     );
 
                     // Track this as having changed.
                     changes.push(OracleChange {
                         oracle: oracle.clone(),
-                        price: new_price,
+                        price: new_price.price,
                     });
                 }
             };
