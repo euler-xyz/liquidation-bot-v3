@@ -60,6 +60,11 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 continue;
             }
 
+            info!(
+                gas_price, gas_usage, cost = cost, profit =? liquidation.profit(),
+                "Executing transaction to liquidate {}", liquidation.account()
+            );
+
             // NOTE: We do not wait for any extra confirmations as there is essentially no risk
             // of a re-org.
             let tx = match provider.send_transaction(tx).await {
