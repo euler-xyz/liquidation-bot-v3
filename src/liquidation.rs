@@ -330,6 +330,13 @@ impl PreparedLiquidation {
     pub fn profit(&self) -> U256 {
         self.profit
     }
+
+    pub fn pyth_cost(&self) -> U256 {
+        match &self.pyth {
+            Some(pyth) => pyth.cost,
+            None => U256::ZERO,
+        }
+    }
 }
 
 pub async fn get_shares_to_underlying(provider: &DynProvider, vault: Address) -> Result<U256> {

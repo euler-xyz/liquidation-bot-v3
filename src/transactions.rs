@@ -49,11 +49,11 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             };
 
             // Make sure this is profitable, if not then we do not execute.
-            let cost = u128::from(gas_usage) * gas_price;
-            if U256::from(cost) > liquidation.profit() {
+            let cost = U256::from(u128::from(gas_usage) * gas_price) + liquidation.pyth_cost();
+            if cost > liquidation.profit() {
                 info!(
                     account =? liquidation.account(),
-                    gas_price, gas_usage, cost = cost, profit =? liquidation.profit(),
+                    gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(),
                     "Transaction to liquidate {} is not profitable, skipping it.",
                     liquidation.account()
                 );
@@ -61,7 +61,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             }
 
             info!(
-                gas_price, gas_usage, cost = cost, profit =? liquidation.profit(),
+                gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(),
                 "Executing transaction to liquidate {}", liquidation.account()
             );
 
