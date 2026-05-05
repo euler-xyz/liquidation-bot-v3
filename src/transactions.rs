@@ -61,7 +61,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             }
 
             info!(
-                gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(),
+                gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(), profit_in_asset =? liquidation.profit_in_asset(),
                 "Executing transaction to liquidate {}", liquidation.account()
             );
 

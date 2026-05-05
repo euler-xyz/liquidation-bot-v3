@@ -65,8 +65,10 @@ pub struct PreparedLiquidation {
     swap: Option<SwapPayload>,
     // The liquidator contract being used.
     liquidator: Address,
-    // The resulting profit from the liquidation.
+    // The resulting profit from the liquidation, converted into ETH.
     profit: U256,
+    // The profit from the liquidation in the original asset.
+    profit_in_asset: U256,
 }
 
 /// Prepares a liquidation by calculating what the most profitable method is.
@@ -269,6 +271,7 @@ pub async fn prepare_liquidation(
             swap: swap_data,
             liquidator: liquidator_address,
             profit,
+            profit_in_asset: amount_out - max_repay,
         });
     }
 
@@ -329,6 +332,10 @@ impl PreparedLiquidation {
 
     pub fn profit(&self) -> U256 {
         self.profit
+    }
+
+    pub fn profit_in_asset(&self) -> U256 {
+        self.profit_in_asset
     }
 
     pub fn pyth_cost(&self) -> U256 {
