@@ -1,8 +1,15 @@
-use alloy::primitives::{Address, Bytes, U256};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use alloy::{
+    primitives::{Address, Bytes, U256, address},
+    providers::{DynProvider, Provider},
+};
 use anyhow::{Result, anyhow};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::liquidation::{self, PreparedLiquidation};
 
 // TODO: Once we know what fields we need (and are nice to have for debugging) we should clean
 // these struct and remove unused fields.
@@ -129,21 +136,44 @@ pub struct MulticallItem {
 // }
 
 pub trait SwapQuoteProvider {
-    async fn get_swap_quote(&self, params: &SwapParams) -> Result<Option<SwapQuote>>;
+    // async fn get_swap_quote(&self, params: &SwapParams) -> Result<Option<SwapQuote>>;
+    async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>>;
 }
 
 pub struct EulerSwapApi {
     base_url: Url,
+    // Provider used for simulating
+    provider: DynProvider,
+
+    chain_id: u64,
+
+    liquidator_eoa: Address,
+    profit_receiver: Address,
+
+    //
+    swapper_address: Address,
 }
 
 impl EulerSwapApi {
-    pub fn new(base_url: Url) -> Self {
-        EulerSwapApi { base_url }
+    pub fn new(
+        base_url: Url,
+        provider: DynProvider,
+        chain_id: u64,
+        profit_receiver: Address,
+        liquidator_eoa: Address,
+        swapper_address: Address,
+    ) -> Self {
+        EulerSwapApi {
+            base_url,
+            provider,
+            chain_id,
+            profit_receiver,
+            liquidator_eoa,
+            swapper_address,
+        }
     }
-}
 
-impl SwapQuoteProvider for EulerSwapApi {
-    async fn get_swap_quote(&self, params: &SwapParams) -> Result<Option<SwapQuote>> {
+    pub async fn get_swap_quotes(&self, params: &SwapParams) -> Result<Vec<SwapQuote>> {
         let mut query: Vec<(&str, String)> = vec![
             ("chainId", params.chain_id.clone()),
             ("tokenIn", params.token_in.to_string()),
@@ -190,7 +220,7 @@ impl SwapQuoteProvider for EulerSwapApi {
         .build()?;
 
         let url =
-            reqwest::Url::parse_with_params(format!("{}swap", self.base_url).as_str(), &query)?;
+            reqwest::Url::parse_with_params(format!("{}swaps", self.base_url).as_str(), &query)?;
 
         // If set we get the api key that removed the request limit, otherwise we may get limited by
         // cloudflare.
@@ -225,8 +255,98 @@ impl SwapQuoteProvider for EulerSwapApi {
         }
 
         match response_body.data {
-            Some(data) => Ok(Some(serde_json::from_value(data)?)),
-            None => Ok(None),
+            Some(data) => Ok(serde_json::from_value(data)?),
+            None => Ok(vec![]),
         }
+    }
+}
+
+impl SwapQuoteProvider for EulerSwapApi {
+    async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>> {
+        let start = SystemTime::now();
+        let since_the_epoch = match start.duration_since(UNIX_EPOCH) {
+            Ok(since) => since,
+            Err(err) => {
+                return Err(anyhow!(
+                    "Issue while getting the current time, it appears to be moving backwards. err: {err}"
+                ));
+            }
+        };
+
+        // Build the params to call the swap api with for this liquidation.
+        let params = &SwapParams {
+            chain_id: self.chain_id.to_string(),
+            token_in: liq.asset().vault.asset,
+            token_out: liq.debt().vault.asset,
+            receiver: self.swapper_address,
+            vault_in: liq.asset().vault.address,
+            origin: self.liquidator_eoa,
+            account_in: self.swapper_address,
+            account_out: self.swapper_address,
+            amount: liq.seized_collateral_amount(),
+            target_debt: U256::ZERO,
+            current_debt: liq.repay_amount(),
+            swapper_mode: "0".to_string(),
+            // TODO: Make this configurable.
+            slippage: "1".to_string(),
+            // Deadline of 5 minutes into the future.
+            deadline: since_the_epoch
+                .saturating_add(Duration::from_mins(5))
+                .as_secs()
+                .to_string(),
+            is_repay: "false".to_string(),
+            dust_account: None,
+            unused_input_receiver: None,
+            transfer_output_to_receiver: None,
+            skip_sweep_deposit_out: Some("true".to_string()),
+            routing_override: None,
+            provider: None,
+        };
+
+        // Call the API to get the possible routes.
+        let quotes = self.get_swap_quotes(params).await?;
+
+        //
+        for quote in quotes {
+            // Since we are sorted by profibility if this is not suffecient none of the others will
+            // be either.
+            if liq.repay_amount() > quote.amount_out {
+                break;
+            }
+
+            // Build the liquidation.
+            let liquidation = liq.clone().with_swap_data(Some(quote.swap));
+
+            dbg!(&liquidation);
+
+            // Simulate executing it.
+            match self
+                .provider
+                .call(liquidation.clone().into_transaction(self.profit_receiver))
+                .await
+            {
+                Ok(_) => {
+                    // This is valid swap data, since we ordered by profitability we can just return
+                    // as this will be the most profitable that we will run into.
+                    let profit = quote.amount_out - liq.repay_amount();
+
+                    // TODO: Convert the profit into the native asset of the chain.
+                    return Ok(Some(
+                        liquidation.with_profit(profit.clone(), profit.clone()),
+                    ));
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        "Error while simulating quote execution and liquidation, err: {}",
+                        err
+                    );
+                    // The liquidation call with this swap failed, continueing onto the next.
+                    continue;
+                }
+            }
+        }
+
+        // We could not find a way to liqudiate this asset profitably.
+        Ok(None)
     }
 }
