@@ -9,7 +9,10 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::liquidation::{self, PreparedLiquidation};
+use crate::{
+    liquidation::{self, PreparedLiquidation},
+    prices::PriceAsset,
+};
 
 // TODO: Once we know what fields we need (and are nice to have for debugging) we should clean
 // these struct and remove unused fields.
@@ -140,21 +143,20 @@ pub trait SwapQuoteProvider {
     async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>>;
 }
 
-pub struct EulerSwapApi {
+pub struct EulerSwapApi<T: PriceAsset> {
     base_url: Url,
     // Provider used for simulating
     provider: DynProvider,
-
     chain_id: u64,
-
     liquidator_eoa: Address,
     profit_receiver: Address,
-
-    //
     swapper_address: Address,
+
+    // This is used to perform pricing conversions.
+    pricing: T,
 }
 
-impl EulerSwapApi {
+impl<T: PriceAsset> EulerSwapApi<T> {
     pub fn new(
         base_url: Url,
         provider: DynProvider,
@@ -162,6 +164,7 @@ impl EulerSwapApi {
         profit_receiver: Address,
         liquidator_eoa: Address,
         swapper_address: Address,
+        pricing: T,
     ) -> Self {
         EulerSwapApi {
             base_url,
@@ -170,6 +173,7 @@ impl EulerSwapApi {
             profit_receiver,
             liquidator_eoa,
             swapper_address,
+            pricing,
         }
     }
 
@@ -261,7 +265,7 @@ impl EulerSwapApi {
     }
 }
 
-impl SwapQuoteProvider for EulerSwapApi {
+impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
     async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>> {
         let start = SystemTime::now();
         let since_the_epoch = match start.duration_since(UNIX_EPOCH) {
@@ -304,9 +308,24 @@ impl SwapQuoteProvider for EulerSwapApi {
         };
 
         // Call the API to get the possible routes.
-        let quotes = self.get_swap_quotes(params).await?;
+        let mut quotes: Vec<SwapQuote> = self.get_swap_quotes(params).await?;
 
-        //
+        // Since we need to do an expensive operation to find out the exchange price
+        // from this asset into the native asset of the chain we make sure we will
+        // actually need the result of it.
+        if quotes.is_empty() {
+            return Ok(None);
+        }
+
+        // We can safely assume the asset is never the native asset, as we would not be trying to
+        // find a swap path if it was.
+
+        // We need to get the USD price of the native asset of the chain, as well as the USD price
+        // of this asset.
+
+        // Sort it by most profitable to least profitable.
+        quotes.sort_by_key(|q| std::cmp::Reverse(q.amount_out));
+
         for quote in quotes {
             // Since we are sorted by profibility if this is not suffecient none of the others will
             // be either.

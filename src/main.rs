@@ -21,11 +21,12 @@ use crate::{
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
     oracles::{OracleChange, OraclesCache, poll_oracles},
+    prices::EulerPricingApi,
     pyth::fetch_pyth_data,
     subgraph::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
     },
-    swap::EulerSwapApi,
+    swap::{EulerSwapApi, SwapQuoteProvider},
     transactions::execute_liquidation_queue,
     types::{Account, VaultAssetPosition, VaultDebtPosition},
     vaults::Vaults,
@@ -38,6 +39,7 @@ mod config;
 mod lens;
 mod liquidation;
 mod oracles;
+mod prices;
 mod pyth;
 mod subgraph;
 mod swap;
@@ -182,6 +184,16 @@ async fn main() {
         execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
     });
 
+    let swap_provider = EulerSwapApi::new(
+        config.swap_url.clone(),
+        provider.clone().erased(),
+        config.chain_id,
+        config.profit_receiver,
+        config.eoa_address,
+        config.swapper_address,
+        EulerPricingApi::new(config.swap_url.clone(), config.chain_id),
+    );
+
     // Start the liquidation bot.
     run(
         config,
@@ -192,6 +204,7 @@ async fn main() {
         account_events_receiver,
         oracles_receiver,
         liquidation_sender,
+        &swap_provider,
     )
     .await;
 }
@@ -209,6 +222,7 @@ pub async fn run(
     mut account_update_channel: Receiver<Address>,
     mut oracle_update_channel: Receiver<Vec<OracleChange>>,
     liquidation_channel: Sender<PreparedLiquidation>,
+    swap_provider: &impl SwapQuoteProvider,
 ) {
     let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
         config.full_resync_and_check_interval_seconds,
@@ -235,7 +249,7 @@ pub async fn run(
                 info!("While resyncing we found {} accounts that are unhealthy, now checking which we can/should liquidate..", number_of_unhealthy);
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
                     tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
                 }).unwrap_or_default();
 
@@ -277,7 +291,7 @@ pub async fn run(
                 let number_of_unhealthy = unhealthy_accounts.len();
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
                     tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
                 }).unwrap_or_default();
 
@@ -327,6 +341,7 @@ pub async fn run(
 
 pub async fn prepare_liquidations(
     provider: &DynProvider,
+    swap_provider: &impl SwapQuoteProvider,
     config: &Config,
     oracles: &OraclesCache,
     unhealthy_accounts: Vec<Account>,
@@ -377,14 +392,7 @@ pub async fn prepare_liquidations(
 
         match prepare_liquidation(
             provider,
-            &EulerSwapApi::new(
-                config.swap_url.clone(),
-                provider.clone(),
-                config.chain_id,
-                config.profit_receiver,
-                config.eoa_address,
-                config.swapper_address,
-            ),
+            swap_provider,
             config.chain_id,
             pyth,
             config.wrapped_native_asset_address,
