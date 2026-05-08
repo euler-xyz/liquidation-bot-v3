@@ -1,6 +1,8 @@
 use alloy::primitives::{Address, U256};
 use anyhow::Result;
+use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use reqwest::{Client, Url};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use serde::{Deserialize, Serialize};
 
 pub trait PriceAsset {
@@ -15,6 +17,7 @@ pub trait PriceAsset {
 pub struct EulerPricingApi {
     base_url: Url,
     chain_id: u64,
+    client: ClientWithMiddleware,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,20 +44,50 @@ struct Meta {
     pub timestamp: String,
 }
 
-async fn get_euler_price(base_url: &Url, chain_id: u64, asset: Address) -> Result<PriceData> {
+async fn get_euler_price(
+    client: &ClientWithMiddleware,
+    base_url: &Url,
+    chain_id: u64,
+    asset: Address,
+) -> Result<PriceData> {
     let url = reqwest::Url::parse(
         format!("{}v3/tokens/{}/{}/price", base_url, chain_id, asset).as_str(),
     )?;
 
-    let client = Client::builder().build()?;
     let response: PriceResponse = client.get(url).send().await?.json().await?;
-
     Ok(response.data)
 }
 
 impl EulerPricingApi {
     pub fn new(base_url: Url, chain_id: u64) -> Self {
-        EulerPricingApi { base_url, chain_id }
+        // Attempt to create a tempdir so we can use it for caching requests.
+        let client = match tempfile::tempdir() {
+            Ok(cache_dir) => {
+                let cache_manager = CACacheManager::new(cache_dir.path().to_path_buf(), true);
+                ClientBuilder::new(Client::new())
+                    .with(Cache(HttpCache {
+                        mode: CacheMode::Default,
+                        manager: cache_manager,
+                        options: HttpCacheOptions::default(),
+                    }))
+                    .build()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Could not configure caching layer for pricing api due to: {}",
+                    e
+                );
+                // Still continue, but without the caching layer.
+                ClientBuilder::new(Client::new()).build()
+            }
+        };
+
+        // Build the reqwest client with a caching layer to reduce duplicate requests.
+        EulerPricingApi {
+            base_url,
+            chain_id,
+            client,
+        }
     }
 }
 
@@ -72,8 +105,14 @@ impl PriceAsset for EulerPricingApi {
             return Ok(input_amount);
         }
 
-        let input_usd = get_euler_price(&self.base_url, self.chain_id, input_asset).await?;
-        let output_usd = get_euler_price(&self.base_url, self.chain_id, output_asset).await?;
+        if input_amount.is_zero() {
+            return Ok(U256::ZERO);
+        }
+
+        let input_usd =
+            get_euler_price(&self.client, &self.base_url, self.chain_id, input_asset).await?;
+        let output_usd =
+            get_euler_price(&self.client, &self.base_url, self.chain_id, output_asset).await?;
 
         let input_price = U256::from((input_usd.price_usd * 1e18) as u128);
         let output_price = U256::from((output_usd.price_usd * 1e18) as u128);
