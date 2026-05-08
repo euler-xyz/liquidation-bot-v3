@@ -4,6 +4,7 @@ use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheO
 use reqwest::{Client, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 
 pub trait PriceAsset {
     async fn quote(
@@ -54,7 +55,9 @@ async fn get_euler_price(
         format!("{}v3/tokens/{}/{}/price", base_url, chain_id, asset).as_str(),
     )?;
 
+    let start = Instant::now();
     let response: PriceResponse = client.get(url).send().await?.json().await?;
+    tracing::debug!("Euler price request took {:?}", start.elapsed());
     Ok(response.data)
 }
 

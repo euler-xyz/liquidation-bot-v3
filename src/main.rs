@@ -394,12 +394,8 @@ pub async fn prepare_liquidations(
         match prepare_liquidation(
             provider,
             swap_provider,
-            config.chain_id,
             pyth,
-            config.wrapped_native_asset_address,
             config.liquidator_address,
-            config.swapper_address,
-            config.eoa_address,
             account.clone().clone(),
         )
         .await
@@ -631,23 +627,21 @@ pub async fn fetch_all_accounts(
 mod test {
     use std::str::FromStr;
 
-    use alloy::{
-        node_bindings::Anvil,
-        primitives::{Address, U256, address, bytes},
-        providers::{Provider, ProviderBuilder, ext::AnvilApi},
-    };
-    use tokio::sync::mpsc;
-    use tracing_subscriber::EnvFilter;
-
     use crate::{
         config::VaultFilter,
         lens::fetch_account,
         liquidation::{PreparedLiquidation, prepare_liquidation},
         prices::EulerPricingApi,
-        swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuote, SwapQuoteProvider},
+        swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuoteProvider},
         transactions::execute_liquidation_queue,
         vaults::Vaults,
     };
+    use alloy::{
+        node_bindings::Anvil,
+        primitives::{U256, address, bytes},
+        providers::{Provider, ProviderBuilder, ext::AnvilApi},
+    };
+    use tokio::sync::mpsc;
 
     struct MockSwapProvider;
 
@@ -688,7 +682,7 @@ mod test {
         let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
 
         // Network (mainnet) specific configuration.
-        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        // let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
 
@@ -743,13 +737,8 @@ mod test {
         let liquidation = prepare_liquidation(
             &provider,
             &MockSwapProvider,
-            1,
             None, // This liquidation does not use any pyth oracles.
-            wrapped_native_asset,
             liquidator_address,
-            // Since we mock the swap provider, this does not matter for us.
-            Address::ZERO,
-            network.wallet().unwrap().default_signer().address(),
             account,
         )
         .await
@@ -761,6 +750,10 @@ mod test {
 
         // Give it some time to perform the liquidation.
         wait_for_next_block(&provider, Some(block)).await;
+
+        // This test seems to be unreliable if its run concurrent with other tests without this
+        // delay.
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         // Re-fetch the account to see its updated status.
         let account = fetch_account(
@@ -844,13 +837,8 @@ mod test {
                 wrapped_native_asset,
                 EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
-            1,
             None, // This liquidation does not use any pyth oracles.
-            wrapped_native_asset,
             liquidator_address,
-            // Since we mock the swap provider, this does not matter for us.
-            address!("0x2Bba09866b6F1025258542478C39720A09B728bF"),
-            network.wallet().unwrap().default_signer().address(),
             account.clone(),
         )
         .await;
@@ -873,13 +861,8 @@ mod test {
                 wrapped_native_asset,
                 EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
-            1,
             None, // This liquidation does not use any pyth oracles.
-            wrapped_native_asset,
             liquidator_address,
-            // Since we mock the swap provider, this does not matter for us.
-            address!("0x2Bba09866b6F1025258542478C39720A09B728bF"),
-            network.wallet().unwrap().default_signer().address(),
             account.clone(),
         )
         .await

@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy::{
-    primitives::{Address, Bytes, U256, address},
+    primitives::{Address, Bytes, U256},
     providers::{DynProvider, Provider},
 };
 use anyhow::{Result, anyhow};
@@ -9,10 +9,7 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    liquidation::{self, PreparedLiquidation},
-    prices::PriceAsset,
-};
+use crate::{liquidation::PreparedLiquidation, prices::PriceAsset};
 
 // TODO: Once we know what fields we need (and are nice to have for debugging) we should clean
 // these struct and remove unused fields.
@@ -139,7 +136,7 @@ pub struct MulticallItem {
 // }
 
 pub trait SwapQuoteProvider {
-    // async fn get_swap_quote(&self, params: &SwapParams) -> Result<Option<SwapQuote>>;
+    #![allow(async_fn_in_trait)]
     async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>>;
 }
 

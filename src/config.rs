@@ -1,5 +1,3 @@
-use std::default;
-
 use alloy::primitives::Address;
 use anyhow::Result;
 use figment::{

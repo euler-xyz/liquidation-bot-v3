@@ -203,8 +203,6 @@ pub struct OracleChange {
 
 struct OracleOutput {
     price: U256,
-    last_polled_at: (),
-    last_changed_at: (),
 }
 
 pub async fn poll_oracles(
@@ -260,14 +258,7 @@ pub async fn poll_oracles(
                     );
 
                     // Update out store.
-                    prices.insert(
-                        oracle.clone(),
-                        OracleOutput {
-                            price: new_price,
-                            last_polled_at: (),
-                            last_changed_at: (),
-                        },
-                    );
+                    prices.insert(oracle.clone(), OracleOutput { price: new_price });
 
                     // Track this as having changed.
                     changes.push(OracleChange {
@@ -439,6 +430,7 @@ impl Oracle {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct Oracle {
     name: String,
     address: Address,

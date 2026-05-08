@@ -1,5 +1,3 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use alloy::{
     network::TransactionBuilder,
     primitives::{Address, Bytes, U256},
@@ -75,12 +73,8 @@ pub struct PreparedLiquidation {
 pub async fn prepare_liquidation(
     provider: &DynProvider,
     swap_provider: &impl SwapQuoteProvider,
-    chain_id: u64,
     pyth: Option<PythFeedInput>,
-    wrapped_native_asset_address: Address,
     liquidator_address: Address,
-    swapper_address: Address,
-    liquidator_eoa: Address,
     account: Account,
 ) -> Result<Option<PreparedLiquidation>> {
     let debt = match account.debt.first() {
@@ -91,16 +85,6 @@ pub async fn prepare_liquidation(
 
     let vault_address = debt.vault.address;
     let vault = ILiquidation::new(vault_address, provider);
-
-    let start = SystemTime::now();
-    let since_the_epoch = match start.duration_since(UNIX_EPOCH) {
-        Ok(since) => since,
-        Err(err) => {
-            return Err(anyhow!(
-                "Issue while getting the current time, it appears to be moving backwards. err: {err}"
-            ));
-        }
-    };
 
     let mut prepared_liquidation: Option<PreparedLiquidation> = None;
     for asset in account.assets.iter() {
@@ -402,11 +386,7 @@ mod test {
                     wrapped_native_asset,
                     EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
                 ),
-                1,
                 pyth,
-                wrapped_native_asset,
-                liquidator_address,
-                swapper,
                 liquidator_address,
                 account,
             )
@@ -485,11 +465,7 @@ mod test {
                 wrapped_native_asset,
                 EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
-            1,
             pyth,
-            wrapped_native_asset,
-            liquidator_address,
-            swapper,
             liquidator_address,
             account,
         )
