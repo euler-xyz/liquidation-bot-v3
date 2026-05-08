@@ -181,7 +181,14 @@ pub async fn prepare_liquidation(
                 // Find the swap data for it.
                 match swap_provider.find_swap(liquidation).await {
                     Ok(Some(liq)) => liq,
-                    _ => {
+                    Ok(None) => {
+                        continue;
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Issue while attempting to find a swap route, err: {}",
+                            err
+                        );
                         continue;
                     }
                 }
@@ -492,7 +499,7 @@ mod test {
 
     #[tokio::test]
     async fn test_check_if_liquidateble() {
-        let account = address!("0x21673a2A1347d318e9741C87C679c9A866aF1d07");
+        let account = address!("0x421c4869095B637d59f25b427904D792dcBe0260");
 
         let provider = ProviderBuilder::new()
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())

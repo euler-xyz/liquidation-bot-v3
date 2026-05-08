@@ -780,11 +780,6 @@ mod test {
 
     #[tokio::test]
     async fn liquidation_with_swap_data() {
-        // Configure tracing.
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
-            .init();
-
         // This account is healthy at this block.
         let block = 24935457;
         let violator = address!("0x68A405Fbe0bC42a228baFdBdD27F17c15475352D");

@@ -313,9 +313,6 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         // Call the API to get the possible routes.
         let mut quotes: Vec<SwapQuote> = self.get_swap_quotes(params).await?;
 
-        // We can safely assume the asset is never the native asset, as we would not be trying to
-        // find a swap path if it was.
-
         // Sort it by most profitable to least profitable.
         quotes.sort_by_key(|q| std::cmp::Reverse(q.amount_out));
 
@@ -328,8 +325,6 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
 
             // Build the liquidation.
             let liquidation = liq.clone().with_swap_data(Some(quote.swap));
-
-            dbg!(&liquidation);
 
             // Simulate executing it.
             match self
@@ -346,10 +341,11 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                         .quote(liq.asset().vault.asset, profit, self.wrapped_native_asset)
                         .await?;
 
-                    // TODO: Convert the profit into the native asset of the chain.
-                    return Ok(Some(
-                        liquidation.with_profit(profit_in_native, profit.clone()),
-                    ));
+                    // NOTE: We could already determine here if this swap is profitable, as we just
+                    // did a simulation so we could check gas usage, and we have the potential
+                    // profit. But it might be cleaner to bubble it up anyway and handle it at the
+                    // execution stage.
+                    return Ok(Some(liquidation.with_profit(profit_in_native, profit)));
                 }
                 Err(err) => {
                     tracing::debug!(

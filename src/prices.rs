@@ -67,6 +67,11 @@ impl PriceAsset for EulerPricingApi {
         input_amount: U256,
         output_asset: Address,
     ) -> Result<U256> {
+        // No need to do a conversion if both assets are the same.
+        if input_asset == output_asset {
+            return Ok(input_amount);
+        }
+
         let input_usd = get_euler_price(&self.base_url, self.chain_id, input_asset).await?;
         let output_usd = get_euler_price(&self.base_url, self.chain_id, output_asset).await?;
 
