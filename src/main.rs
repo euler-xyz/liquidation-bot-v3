@@ -191,7 +191,8 @@ async fn main() {
         config.profit_receiver,
         config.eoa_address,
         config.swapper_address,
-        EulerPricingApi::new(config.swap_url.clone(), config.chain_id),
+        config.wrapped_native_asset_address,
+        EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
     );
 
     // Start the liquidation bot.
@@ -642,6 +643,7 @@ mod test {
         config::VaultFilter,
         lens::fetch_account,
         liquidation::{PreparedLiquidation, prepare_liquidation},
+        prices::EulerPricingApi,
         swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuote, SwapQuoteProvider},
         transactions::execute_liquidation_queue,
         vaults::Vaults,
@@ -844,6 +846,8 @@ mod test {
                 liquidator_address,
                 liquidator_address,
                 swapper,
+                wrapped_native_asset,
+                EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
             1,
             None, // This liquidation does not use any pyth oracles.
@@ -871,6 +875,8 @@ mod test {
                 liquidator_address,
                 liquidator_address,
                 swapper,
+                wrapped_native_asset,
+                EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
             1,
             None, // This liquidation does not use any pyth oracles.

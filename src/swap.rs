@@ -151,6 +151,7 @@ pub struct EulerSwapApi<T: PriceAsset> {
     liquidator_eoa: Address,
     profit_receiver: Address,
     swapper_address: Address,
+    wrapped_native_asset: Address,
 
     // This is used to perform pricing conversions.
     pricing: T,
@@ -164,6 +165,7 @@ impl<T: PriceAsset> EulerSwapApi<T> {
         profit_receiver: Address,
         liquidator_eoa: Address,
         swapper_address: Address,
+        wrapped_native_asset: Address,
         pricing: T,
     ) -> Self {
         EulerSwapApi {
@@ -173,6 +175,7 @@ impl<T: PriceAsset> EulerSwapApi<T> {
             profit_receiver,
             liquidator_eoa,
             swapper_address,
+            wrapped_native_asset,
             pricing,
         }
     }
@@ -310,18 +313,8 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         // Call the API to get the possible routes.
         let mut quotes: Vec<SwapQuote> = self.get_swap_quotes(params).await?;
 
-        // Since we need to do an expensive operation to find out the exchange price
-        // from this asset into the native asset of the chain we make sure we will
-        // actually need the result of it.
-        if quotes.is_empty() {
-            return Ok(None);
-        }
-
         // We can safely assume the asset is never the native asset, as we would not be trying to
         // find a swap path if it was.
-
-        // We need to get the USD price of the native asset of the chain, as well as the USD price
-        // of this asset.
 
         // Sort it by most profitable to least profitable.
         quotes.sort_by_key(|q| std::cmp::Reverse(q.amount_out));
@@ -348,10 +341,14 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                     // This is valid swap data, since we ordered by profitability we can just return
                     // as this will be the most profitable that we will run into.
                     let profit = quote.amount_out - liq.repay_amount();
+                    let profit_in_native = self
+                        .pricing
+                        .quote(liq.asset().vault.asset, profit, self.wrapped_native_asset)
+                        .await?;
 
                     // TODO: Convert the profit into the native asset of the chain.
                     return Ok(Some(
-                        liquidation.with_profit(profit.clone(), profit.clone()),
+                        liquidation.with_profit(profit_in_native, profit.clone()),
                     ));
                 }
                 Err(err) => {

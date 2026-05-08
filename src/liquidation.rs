@@ -13,7 +13,7 @@ use anyhow::{Result, anyhow};
 use crate::{
     account::ILiquidation,
     pyth::PythFeedInput,
-    swap::{SwapParams, SwapPayload, SwapQuoteProvider},
+    swap::{SwapPayload, SwapQuoteProvider},
     types::{Account, VaultAssetPosition, VaultDebtPosition},
 };
 
@@ -320,7 +320,8 @@ mod test {
 
     use crate::{
         config::VaultFilter, lens::fetch_account, liquidation::prepare_liquidation,
-        oracles::OraclesCache, pyth::fetch_pyth_data, swap::EulerSwapApi, vaults::Vaults,
+        oracles::OraclesCache, prices::EulerPricingApi, pyth::fetch_pyth_data, swap::EulerSwapApi,
+        vaults::Vaults,
     };
 
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
@@ -390,7 +391,9 @@ mod test {
                     1,
                     liquidator_address,
                     liquidator_address,
-                    swapper
+                    swapper,
+                    wrapped_native_asset,
+                    EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
                 ),
                 1,
                 pyth,
@@ -472,6 +475,8 @@ mod test {
                 liquidator_address,
                 liquidator_address,
                 swapper,
+                wrapped_native_asset,
+                EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
             1,
             pyth,

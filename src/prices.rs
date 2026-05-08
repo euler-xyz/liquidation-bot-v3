@@ -46,8 +46,6 @@ async fn get_euler_price(base_url: &Url, chain_id: u64, asset: Address) -> Resul
         format!("{}v3/tokens/{}/{}/price", base_url, chain_id, asset).as_str(),
     )?;
 
-    dbg!(&url);
-
     let client = Client::builder().build()?;
     let response: PriceResponse = client.get(url).send().await?.json().await?;
 
@@ -81,5 +79,62 @@ impl PriceAsset for EulerPricingApi {
         let output_amount = num / den;
 
         Ok(output_amount)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use alloy::primitives::{U256, address};
+
+    use crate::prices::{EulerPricingApi, PriceAsset};
+
+    #[tokio::test]
+    async fn price_usdc_usdt() {
+        let pricing = EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1);
+
+        // Convert 1 USDT into 1 USDC, this test optimistically assumes there is no depeg for either
+        // of these assets.
+        let price = pricing
+            .quote(
+                address!("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+                U256::from(1_000_000),
+                address!("0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+            )
+            .await
+            .unwrap();
+
+        assert!(price > U256::from(950_000));
+        assert!(price < U256::from(1_050_000));
+    }
+
+    #[tokio::test]
+    async fn price_usdc_eth() {
+        let pricing = EulerPricingApi::new("https://v3.eul.dev".parse().unwrap(), 1);
+        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+
+        let in_amount = U256::from(1_000_000);
+
+        // Price 1 USDC into ETH
+        let quote = pricing
+            .quote(
+                address!("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+                in_amount,
+                wrapped_native_asset,
+            )
+            .await
+            .unwrap();
+
+        // Now we reverse the quote to see if we get back to the original (rougly).
+        let quote = pricing
+            .quote(
+                wrapped_native_asset,
+                quote,
+                address!("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            )
+            .await
+            .unwrap();
+
+        assert!(quote - U256::from(100) < in_amount);
+        assert!(quote + U256::from(100) > in_amount);
     }
 }
