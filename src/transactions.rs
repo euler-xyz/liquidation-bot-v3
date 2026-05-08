@@ -53,7 +53,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             if cost > liquidation.profit() {
                 info!(
                     account =? liquidation.account(),
-                    gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(),
+                    gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(), profit_in_asset =? liquidation.profit_in_asset(),
                     "Transaction to liquidate {} is not profitable, skipping it.",
                     liquidation.account()
                 );

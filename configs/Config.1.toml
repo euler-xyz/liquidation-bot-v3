@@ -1,4 +1,5 @@
 swap_url = "https://swap.euler.finance"
+pricing_url = "https://v3.eul.dev"
 subgraph_url_path = "subgraphs/euler-simple-mainnet/latest/gn"
 evc_address = "0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"
 pyth_address = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6"

@@ -1,5 +1,3 @@
-use std::default;
-
 use alloy::primitives::Address;
 use anyhow::Result;
 use figment::{
@@ -51,6 +49,9 @@ pub struct Config {
 
     // The url of the Euler swap api.
     pub swap_url: Url,
+
+    // The url of the Euler pricing api.
+    pub pricing_url: Url,
 
     // The evc contract address.
     pub evc_address: Address,
