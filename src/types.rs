@@ -1,8 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use alloy::primitives::{Address, U256};
+use serde::Serialize;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Vault {
     pub address: Address,
     pub asset: Address,
@@ -14,33 +15,33 @@ pub struct Vault {
     pub ltvs: HashMap<Address, Ltv>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Ltv {
     pub asset: Address,
     pub liquidation: U256,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize)]
 pub struct OracleIdentifier {
     pub base_asset: Address,
     pub quote_asset: Address,
     pub adapter: Address,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Account {
     pub address: Address,
     pub debt: Vec<VaultDebtPosition>,
     pub assets: Vec<VaultAssetPosition>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct VaultAssetPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct VaultDebtPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,

@@ -9,7 +9,7 @@ use alloy::{
 };
 use itertools::Itertools;
 use reqwest::Url;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -17,6 +17,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     account::watch_chain_for_accounts_from_latest,
     accounts::AccountsTracker,
+    api::{BotState, serve},
     config::{Config, get_config},
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
@@ -35,6 +36,7 @@ use anyhow::{Result, anyhow};
 
 mod account;
 mod accounts;
+mod api;
 mod config;
 mod lens;
 mod liquidation;
@@ -110,7 +112,7 @@ async fn main() {
 
     // Our singleton vault store.
     let vaults = Vaults::new(config.vault_lens_address);
-    let accounts = AccountsTracker::new();
+    let accounts = Arc::new(AccountsTracker::new());
     let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
 
     let (account_events_sender, account_events_receiver) = mpsc::channel::<Address>(100);
@@ -184,6 +186,18 @@ async fn main() {
         execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
     });
 
+    if config.enable_observability_api {
+        // Start the observability api.
+        let state = BotState {
+            accounts: accounts.clone(),
+            oracles: oracles.clone(),
+        };
+
+        tokio::spawn(async move {
+            serve(state).await;
+        });
+    }
+
     let swap_provider = EulerSwapApi::new(
         config.swap_url.clone(),
         provider.clone().erased(),
@@ -192,6 +206,8 @@ async fn main() {
         config.eoa_address,
         config.swapper_address,
         config.wrapped_native_asset_address,
+        // TODO: Move to config.
+        "1", // Max slippage.
         EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
     );
 
@@ -215,7 +231,7 @@ pub async fn run(
     config: Config,
     provider: &DynProvider,
 
-    mut accounts: AccountsTracker,
+    accounts: Arc<AccountsTracker>,
     mut vaults: Vaults,
     oracles: OraclesCache,
 
@@ -238,7 +254,7 @@ pub async fn run(
             _ = resync_interval.tick() => {
                 info!("Syncing all accounts and checking the health for each of them.");
 
-                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &mut accounts, &mut vaults, &oracles).await {
+                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &mut vaults, &oracles).await {
                     Ok(unhealthy_accounts) => unhealthy_accounts,
                     Err(e) => {
                         tracing::error!("Error while refreshing, err:{}", e);
@@ -273,7 +289,6 @@ pub async fn run(
 
                 let unhealthy_accounts: Vec<_> = accounts_affected
                     .iter()
-                    // NOTE: Errors regarding missing oracles get hidden here by the `.ok()`
                     .filter(|a| {
                         match a.calculate_health(&oracles) {
                             Ok(health) => {
@@ -424,7 +439,7 @@ pub async fn prepare_liquidations(
 pub async fn refresh_and_check_all(
     provider: &DynProvider,
     config: Config,
-    accounts: &mut AccountsTracker,
+    accounts: &Arc<AccountsTracker>,
     vaults: &mut Vaults,
     oracles: &OraclesCache,
 ) -> Result<Vec<Account>> {
@@ -835,6 +850,7 @@ mod test {
                 liquidator_address,
                 swapper,
                 wrapped_native_asset,
+                "5", // Max slippage
                 EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
             None, // This liquidation does not use any pyth oracles.
@@ -859,6 +875,7 @@ mod test {
                 liquidator_address,
                 swapper,
                 wrapped_native_asset,
+                "5", // Max slippage.
                 EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
             ),
             None, // This liquidation does not use any pyth oracles.
@@ -912,7 +929,7 @@ mod test {
 
             if current_block > start_block {
                 tracing::info!(
-                    "TEST: new block mined after {}s: {} -> {}",
+                    "test: new block mined after {}s: {} -> {}",
                     i + 1,
                     start_block,
                     current_block

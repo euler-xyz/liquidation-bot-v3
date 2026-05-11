@@ -142,6 +142,7 @@ pub trait SwapQuoteProvider {
 
 pub struct EulerSwapApi<T: PriceAsset> {
     base_url: Url,
+
     // Provider used for simulating
     provider: DynProvider,
     chain_id: u64,
@@ -149,6 +150,8 @@ pub struct EulerSwapApi<T: PriceAsset> {
     profit_receiver: Address,
     swapper_address: Address,
     wrapped_native_asset: Address,
+
+    max_slippage: String,
 
     // This is used to perform pricing conversions.
     pricing: T,
@@ -163,6 +166,7 @@ impl<T: PriceAsset> EulerSwapApi<T> {
         liquidator_eoa: Address,
         swapper_address: Address,
         wrapped_native_asset: Address,
+        max_slippage: &str,
         pricing: T,
     ) -> Self {
         EulerSwapApi {
@@ -173,6 +177,7 @@ impl<T: PriceAsset> EulerSwapApi<T> {
             liquidator_eoa,
             swapper_address,
             wrapped_native_asset,
+            max_slippage: max_slippage.to_string(),
             pricing,
         }
     }
@@ -291,8 +296,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             target_debt: U256::ZERO,
             current_debt: liq.repay_amount(),
             swapper_mode: "0".to_string(),
-            // TODO: Make this configurable.
-            slippage: "1".to_string(),
+            slippage: self.max_slippage.clone(),
             // Deadline of 5 minutes into the future.
             deadline: since_the_epoch
                 .saturating_add(Duration::from_mins(5))

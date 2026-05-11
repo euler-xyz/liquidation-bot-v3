@@ -17,6 +17,12 @@ backon = { version = "1.6.0", features = ["tokio"]}
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dashmap = "6.1.0"
+axum = "0.8.9"
+tower-http = { version = "0.6.8", features = ["cors"] }
+tower = { version = "0.5.3", features = ["tokio"] }
+http = "1.4.0"
+chrono = { version = "0.4.44", features = ["serde"] }
+serde_with = { version = "3.19.0", features = ["chrono", "json"] }
 http-cache-reqwest = "0.16.0"
 reqwest-middleware = "0.4"
 tempfile = "3.27.0"

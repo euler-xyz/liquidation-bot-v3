@@ -14,6 +14,7 @@ profit_receiver = "0x8cbB534874bab83e44a7325973D2F04493359dF8"
 
 oracle_polling_interval_seconds = 30
 full_resync_and_check_interval_seconds = 3600 
+enable_observability_api = true
 
 [vault_filter]
 mode = "Blacklist"

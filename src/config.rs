@@ -99,6 +99,10 @@ pub struct Config {
     #[serde(default)]
     // Lets the config specify in what mode the filter is operating and what to filter.
     pub vault_filter: VaultFilter,
+
+    // Observability settings
+    #[serde(default)]
+    pub enable_observability_api: bool,
 }
 
 pub fn get_config() -> Result<Config> {
