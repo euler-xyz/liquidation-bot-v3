@@ -184,15 +184,17 @@ async fn main() {
         execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
     });
 
-    // Start the observability api.
-    let state = BotState {
-        accounts: accounts.clone(),
-        oracles: oracles.clone(),
-    };
+    if config.enable_observability_api {
+        // Start the observability api.
+        let state = BotState {
+            accounts: accounts.clone(),
+            oracles: oracles.clone(),
+        };
 
-    tokio::spawn(async move {
-        serve(state).await;
-    });
+        tokio::spawn(async move {
+            serve(state).await;
+        });
+    }
 
     // Start the liquidation bot.
     run(
