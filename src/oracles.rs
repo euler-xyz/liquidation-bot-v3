@@ -500,6 +500,7 @@ impl Oracle {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[allow(dead_code)]
 pub struct Oracle {
     name: String,
     address: Address,

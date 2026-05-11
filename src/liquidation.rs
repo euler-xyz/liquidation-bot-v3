@@ -1,5 +1,3 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use alloy::{
     network::TransactionBuilder,
     primitives::{Address, Bytes, U256},
@@ -13,7 +11,7 @@ use anyhow::{Result, anyhow};
 use crate::{
     account::ILiquidation,
     pyth::PythFeedInput,
-    swap::{SwapParams, SwapPayload, SwapQuoteProvider},
+    swap::{SwapPayload, SwapQuoteProvider},
     types::{Account, VaultAssetPosition, VaultDebtPosition},
 };
 
@@ -65,20 +63,18 @@ pub struct PreparedLiquidation {
     swap: Option<SwapPayload>,
     // The liquidator contract being used.
     liquidator: Address,
-    // The resulting profit from the liquidation.
+    // The resulting profit from the liquidation, converted into ETH.
     profit: U256,
+    // The profit from the liquidation in the original asset.
+    profit_in_asset: U256,
 }
 
 /// Prepares a liquidation by calculating what the most profitable method is.
 pub async fn prepare_liquidation(
     provider: &DynProvider,
     swap_provider: &impl SwapQuoteProvider,
-    chain_id: u64,
     pyth: Option<PythFeedInput>,
-    wrapped_native_asset_address: Address,
     liquidator_address: Address,
-    swapper_address: Address,
-    liquidator_eoa: Address,
     account: Account,
 ) -> Result<Option<PreparedLiquidation>> {
     let debt = match account.debt.first() {
@@ -89,16 +85,6 @@ pub async fn prepare_liquidation(
 
     let vault_address = debt.vault.address;
     let vault = ILiquidation::new(vault_address, provider);
-
-    let start = SystemTime::now();
-    let since_the_epoch = match start.duration_since(UNIX_EPOCH) {
-        Ok(since) => since,
-        Err(err) => {
-            return Err(anyhow!(
-                "Issue while getting the current time, it appears to be moving backwards. err: {err}"
-            ));
-        }
-    };
 
     let mut prepared_liquidation: Option<PreparedLiquidation> = None;
     for asset in account.assets.iter() {
@@ -139,110 +125,53 @@ pub async fn prepare_liquidation(
         let vault = Vault::new(asset.vault.address, provider);
         let max_assets = vault.convertToAssets(max_yield).call().await?;
 
-        let (amount_out, swap_data) = match debt.vault.asset == asset.vault.asset {
+        let new_potential_liquidation = match debt.vault.asset == asset.vault.asset {
             true => {
-                // Assets are already the same, no need to swap.
-                (max_assets, None)
-            }
-            false => {
-                // Have the swap api calculate attempt to convert the colleteral to the debt.
-                // If the result did not contain a quote then we continue.
-                match swap_provider
-                    .get_swap_quote(&SwapParams {
-                        chain_id: chain_id.to_string(),
-                        token_in: asset.vault.asset,
-                        token_out: debt.vault.asset,
-                        receiver: swapper_address,
-                        vault_in: asset.vault.address,
-                        origin: liquidator_eoa,
-                        account_in: swapper_address,
-                        account_out: swapper_address,
-                        amount: max_assets,
-                        target_debt: U256::ZERO,
-                        current_debt: max_repay,
-                        swapper_mode: "0".to_string(),
-                        // TODO: Make this configurable.
-                        slippage: "5".to_string(),
-                        // Deadline of 5 minutes into the future.
-                        deadline: since_the_epoch
-                            .saturating_add(Duration::from_mins(5))
-                            .as_secs()
-                            .to_string(),
-                        is_repay: "false".to_string(),
-                        dust_account: None,
-                        unused_input_receiver: None,
-                        transfer_output_to_receiver: None,
-                        skip_sweep_deposit_out: Some("true".to_string()),
-                        routing_override: None,
-                        provider: None,
-                    })
-                    .await
-                {
-                    Ok(Some(quote)) => (quote.amount_out, Some(quote.swap)),
-                    Ok(None) => continue,
-                    Err(e) => {
-                        tracing::error!(
-                            "Error while preparing liquidation as we try converting collateral into debt, err: {}",
-                            e
-                        );
-                        continue;
-                    }
+                // Since these are in the same asset, the assets need to be more than the repay.
+                if max_assets < max_repay {
+                    continue;
+                }
+
+                PreparedLiquidation {
+                    account: account.clone(),
+                    debt: debt.clone(),
+                    asset: asset.clone(),
+                    repay_amount: max_repay,
+                    seized_collateral_amount: max_assets,
+                    pyth: pyth.clone(),
+                    // No swap neeeded.
+                    swap: None,
+                    liquidator: liquidator_address,
+                    profit: U256::ZERO,
+                    profit_in_asset: max_assets - max_repay,
                 }
             }
-        };
-
-        // Check that the resulting amount is more than the price of the debt.
-        if amount_out < max_repay {
-            continue;
-        }
-
-        let profit = amount_out - max_repay;
-
-        // If the profit after repaying is in an asset other thatn the native asset then we convert
-        // to it to figure out how much of a profit this is making.
-        let profit = match debt.vault.asset == wrapped_native_asset_address {
-            true => profit,
             false => {
-                // Have the swap api calculate attempt to convert the colleteral to the debt.
-                match swap_provider
-                    .get_swap_quote(&SwapParams {
-                        chain_id: chain_id.to_string(),
-                        token_in: debt.vault.asset,
-                        token_out: wrapped_native_asset_address,
-                        receiver: liquidator_address,
-                        vault_in: debt.vault.address,
-                        origin: liquidator_eoa,
-                        account_in: liquidator_address,
-                        account_out: liquidator_address,
-                        amount: profit,
-                        target_debt: U256::ZERO,
-                        current_debt: U256::ZERO,
-                        swapper_mode: "0".to_string(),
-                        slippage: "0.5".to_string(),
-                        // Deadline of 5 minutes into the future.
-                        deadline: since_the_epoch
-                            .saturating_add(Duration::from_mins(5))
-                            .as_secs()
-                            .to_string(),
-                        is_repay: "false".to_string(),
-                        dust_account: None,
-                        unused_input_receiver: None,
-                        transfer_output_to_receiver: None,
-                        skip_sweep_deposit_out: Some("true".to_string()),
-                        routing_override: None,
-                        provider: None,
-                    })
-                    .await
-                {
-                    Ok(Some(quote)) => quote.amount_out,
+                let liquidation = PreparedLiquidation {
+                    account: account.clone(),
+                    debt: debt.clone(),
+                    asset: asset.clone(),
+                    repay_amount: max_repay,
+                    seized_collateral_amount: max_assets,
+                    pyth: pyth.clone(),
+                    liquidator: liquidator_address,
+
+                    // These fields will be caldulated and set by the swap provider.
+                    swap: None,
+                    profit: U256::ZERO,
+                    profit_in_asset: U256::ZERO,
+                };
+
+                // Find the swap data for it.
+                match swap_provider.find_swap(liquidation).await {
+                    Ok(Some(liq)) => liq,
                     Ok(None) => {
-                        // TODO: add tracing.
                         continue;
                     }
-                    Err(e) => {
+                    Err(err) => {
                         tracing::error!(
-                            "Error while preparing liquidation as we converted profit into native asset, err: {}",
-                            e
+                            "Issue while attempting to find a swap route, err: {}",
+                            err
                         );
                         continue;
                     }
@@ -252,24 +181,13 @@ pub async fn prepare_liquidation(
 
         // Check if the profit from this would be higher than what we have previously found.
         if let Some(prepared) = &prepared_liquidation
-            && prepared.profit > profit
+            && prepared.profit > new_potential_liquidation.profit
         {
             continue;
         }
 
         // The profit will be higher so we store this as the best option.
-        prepared_liquidation = Some(PreparedLiquidation {
-            account: account.clone(),
-            debt: debt.clone(),
-            asset: asset.clone(),
-            repay_amount: max_repay,
-            // TODO: check if this should be denominated in assets or in shares (yield).
-            seized_collateral_amount: max_assets,
-            pyth: pyth.clone(),
-            swap: swap_data,
-            liquidator: liquidator_address,
-            profit,
-        });
+        prepared_liquidation = Some(new_potential_liquidation);
     }
 
     Ok(prepared_liquidation)
@@ -330,6 +248,44 @@ impl PreparedLiquidation {
     pub fn profit(&self) -> U256 {
         self.profit
     }
+
+    pub fn profit_in_asset(&self) -> U256 {
+        self.profit_in_asset
+    }
+
+    pub fn asset(&self) -> VaultAssetPosition {
+        self.asset.clone()
+    }
+
+    pub fn debt(&self) -> VaultDebtPosition {
+        self.debt.clone()
+    }
+
+    pub fn repay_amount(&self) -> U256 {
+        self.repay_amount
+    }
+
+    pub fn seized_collateral_amount(&self) -> U256 {
+        self.seized_collateral_amount
+    }
+
+    pub fn pyth_cost(&self) -> U256 {
+        match &self.pyth {
+            Some(pyth) => pyth.cost,
+            None => U256::ZERO,
+        }
+    }
+
+    pub fn with_swap_data(mut self, swap_data: Option<SwapPayload>) -> Self {
+        self.swap = swap_data;
+        self
+    }
+
+    pub fn with_profit(mut self, native_profit: U256, profit_in_asset: U256) -> Self {
+        self.profit = native_profit;
+        self.profit_in_asset = profit_in_asset;
+        self
+    }
 }
 
 pub async fn get_shares_to_underlying(provider: &DynProvider, vault: Address) -> Result<U256> {
@@ -355,7 +311,8 @@ mod test {
 
     use crate::{
         config::VaultFilter, lens::fetch_account, liquidation::prepare_liquidation,
-        oracles::OraclesCache, pyth::fetch_pyth_data, swap::EulerSwapApi, vaults::Vaults,
+        oracles::OraclesCache, prices::EulerPricingApi, pyth::fetch_pyth_data, swap::EulerSwapApi,
+        vaults::Vaults,
     };
 
     const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
@@ -418,13 +375,19 @@ mod test {
 
         dbg!(
             prepare_liquidation(
-                &provider,
-                &EulerSwapApi::new("https://swap.euler.finance".parse().unwrap()),
-                1,
+                &provider.clone(),
+                &EulerSwapApi::new(
+                    "https://swap.euler.finance".parse().unwrap(),
+                    provider.erased(),
+                    1,
+                    liquidator_address,
+                    liquidator_address,
+                    swapper,
+                    wrapped_native_asset,
+                    "1", // Max slippage.
+                    EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
+                ),
                 pyth,
-                wrapped_native_asset,
-                liquidator_address,
-                swapper,
                 liquidator_address,
                 account,
             )
@@ -492,13 +455,19 @@ mod test {
         };
 
         prepare_liquidation(
-            &provider,
-            &EulerSwapApi::new("https://swap.euler.finance".parse().unwrap()),
-            1,
+            &provider.clone(),
+            &EulerSwapApi::new(
+                "https://swap.euler.finance".parse().unwrap(),
+                provider.erased(),
+                1,
+                liquidator_address,
+                liquidator_address,
+                swapper,
+                wrapped_native_asset,
+                "1", // Max slippage
+                EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
+            ),
             pyth,
-            wrapped_native_asset,
-            liquidator_address,
-            swapper,
             liquidator_address,
             account,
         )
@@ -508,7 +477,7 @@ mod test {
 
     #[tokio::test]
     async fn test_check_if_liquidateble() {
-        let account = address!("0x21673a2A1347d318e9741C87C679c9A866aF1d07");
+        let account = address!("0x421c4869095B637d59f25b427904D792dcBe0260");
 
         let provider = ProviderBuilder::new()
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())

@@ -20,6 +20,7 @@ struct Block {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum SubGraphError {
     GQLError(GraphQLError),
     JsonDecodeError,
