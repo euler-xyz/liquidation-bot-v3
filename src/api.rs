@@ -18,6 +18,7 @@ use crate::{
 pub struct BotState {
     pub accounts: Arc<AccountsTracker>,
     pub oracles: OraclesCache,
+    pub state: tokio::sync::watch::Receiver<BotHealth>,
 }
 
 pub async fn serve(state: BotState) {
@@ -60,15 +61,15 @@ pub async fn serve(state: BotState) {
     };
 }
 
-#[derive(Serialize)]
-enum BotHealth {
+#[derive(Serialize, Clone)]
+pub enum BotHealth {
     Healthy,
     Syncing,
     Error(String),
 }
 
 async fn health(State(state): State<BotState>) -> (StatusCode, Json<BotHealth>) {
-    (StatusCode::OK, Json(BotHealth::Healthy))
+    (StatusCode::OK, Json(state.state.borrow().clone()))
 }
 
 #[derive(Serialize)]

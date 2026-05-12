@@ -132,7 +132,7 @@ impl OraclesCache {
 
         let new_price = match self.prices.get(&id) {
             // We had a prev price and it has changed since last check.
-            Some(prev) if prev.price == price => OracleOutput {
+            Some(prev) if prev.price != price => OracleOutput {
                 price,
                 last_polled_at: Utc::now(),
                 last_changed_at: Utc::now(),

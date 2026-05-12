@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     account::watch_chain_for_accounts_from_latest,
     accounts::AccountsTracker,
-    api::{BotState, serve},
+    api::{BotHealth, BotState, serve},
     config::{Config, get_config},
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
@@ -186,11 +186,14 @@ async fn main() {
         execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
     });
 
+    let (tx, rx) = tokio::sync::watch::channel(BotHealth::Syncing);
+
     if config.enable_observability_api {
         // Start the observability api.
         let state = BotState {
             accounts: accounts.clone(),
             oracles: oracles.clone(),
+            state: rx,
         };
 
         tokio::spawn(async move {
@@ -222,6 +225,7 @@ async fn main() {
         oracles_receiver,
         liquidation_sender,
         &swap_provider,
+        Some(tx),
     )
     .await;
 }
@@ -240,6 +244,7 @@ pub async fn run(
     mut oracle_update_channel: Receiver<Vec<OracleChange>>,
     liquidation_channel: Sender<PreparedLiquidation>,
     swap_provider: &impl SwapQuoteProvider,
+    state: Option<tokio::sync::watch::Sender<BotHealth>>,
 ) {
     let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
         config.full_resync_and_check_interval_seconds,
@@ -261,6 +266,13 @@ pub async fn run(
                         continue;
                     }
                 };
+
+                // Signal that the bot is healthy and finished syncing.
+                if let Some(ref state_sender) = state {
+                    let _ = state_sender.send(BotHealth::Healthy).inspect_err(|e| {
+                        tracing::warn!("Could not signal healthy state due to error with sender, err: {}", e);
+                    });
+                }
 
                 let number_of_unhealthy = unhealthy_accounts.len();
                 info!("While resyncing we found {} accounts that are unhealthy, now checking which we can/should liquidate..", number_of_unhealthy);
