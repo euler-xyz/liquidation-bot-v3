@@ -244,7 +244,7 @@ pub async fn run(
     mut oracle_update_channel: Receiver<Vec<OracleChange>>,
     liquidation_channel: Sender<PreparedLiquidation>,
     swap_provider: &impl SwapQuoteProvider,
-    mut state: Option<tokio::sync::watch::Sender<BotHealth>>,
+    state: Option<tokio::sync::watch::Sender<BotHealth>>,
 ) {
     let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
         config.full_resync_and_check_interval_seconds,
