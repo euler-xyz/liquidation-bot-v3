@@ -137,7 +137,7 @@ mod test {
 
     #[tokio::test]
     async fn price_usdc_usdt() {
-        let pricing = EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1);
+        let pricing = EulerPricingApi::new("https://v3.euler.finance/".parse().unwrap(), 1);
 
         // Convert 1 USDT into 1 USDC, this test optimistically assumes there is no depeg for either
         // of these assets.
@@ -156,7 +156,7 @@ mod test {
 
     #[tokio::test]
     async fn price_usdc_eth() {
-        let pricing = EulerPricingApi::new("https://v3.eul.dev".parse().unwrap(), 1);
+        let pricing = EulerPricingApi::new("https://v3.euler.finance/".parse().unwrap(), 1);
         let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
 
         let in_amount = U256::from(1_000_000);

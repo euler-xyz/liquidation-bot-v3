@@ -204,7 +204,7 @@ impl Account {
                         let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(100_000);
 
                         // Apply the liquidation LTV onto the underlying.
-                        amount * ltv.liquidation / U256::from(10_000)
+                        amount * ltv.current_liquidation_ltv() / U256::from(10_000)
                     },
                     None => {
                         debug!( controller =? debt.vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");

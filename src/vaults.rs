@@ -109,10 +109,14 @@ impl Vaults {
                         .map(|ltv| {
                             (
                                 ltv.collateral,
-                                Ltv {
-                                    asset: ltv.collateral,
-                                    liquidation: ltv.liquidationLTV,
-                                },
+                                Ltv::new(
+                                    ltv.collateral,
+                                    ltv.borrowLTV,
+                                    ltv.liquidationLTV,
+                                    ltv.initialLiquidationLTV,
+                                    ltv.targetTimestamp,
+                                    ltv.rampDuration,
+                                ),
                             )
                         })
                         .collect(),

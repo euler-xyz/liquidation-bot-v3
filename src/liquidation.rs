@@ -385,7 +385,7 @@ mod test {
                     swapper,
                     wrapped_native_asset,
                     "1", // Max slippage.
-                    EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
+                    EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
                 ),
                 pyth,
                 liquidator_address,
@@ -465,7 +465,7 @@ mod test {
                 swapper,
                 wrapped_native_asset,
                 "1", // Max slippage
-                EulerPricingApi::new("https://v3.eul.dev/".parse().unwrap(), 1),
+                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
             ),
             pyth,
             liquidator_address,
