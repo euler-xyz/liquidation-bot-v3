@@ -4,7 +4,7 @@ use alloy::{
     primitives::{Address, Bytes, U256},
     providers::{DynProvider, Provider},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -233,7 +233,7 @@ impl<T: PriceAsset> EulerSwapApi<T> {
 
         // If set we get the api key that removed the request limit, otherwise we may get limited by
         // cloudflare.
-        let api_key = std::env::var("SWAP_API_HEADER_SECRET ").unwrap_or_default();
+        let api_key = std::env::var("SWAP_API_HEADER_SECRET").unwrap_or_default();
 
         let response_body = client
             .get(url.clone())
@@ -312,7 +312,10 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         };
 
         // Call the API to get the possible routes.
-        let mut quotes: Vec<SwapQuote> = self.get_swap_quotes(params).await?;
+        let mut quotes: Vec<SwapQuote> = self
+            .get_swap_quotes(params)
+            .await
+            .context("When fetching swap quotes")?;
 
         // Sort it by most profitable to least profitable.
         quotes.sort_by_key(|q| std::cmp::Reverse(q.amount_out));

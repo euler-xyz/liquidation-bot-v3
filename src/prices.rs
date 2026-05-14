@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, U256};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use reqwest::{Client, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
@@ -36,7 +36,7 @@ struct PriceData {
     pub price_usd: f64,
     pub decimals: u32,
     pub source: String,
-    pub confidence: f64,
+    pub confidence: Option<f64>,
     pub timestamp: String,
 }
 
@@ -56,7 +56,19 @@ async fn get_euler_price(
     )?;
 
     let start = Instant::now();
-    let response: PriceResponse = client.get(url).send().await?.json().await?;
+    let response_body = client.get(url).send().await?.text().await?;
+
+    let response: PriceResponse = match serde_json::from_str(&response_body) {
+        Ok(data) => data,
+        Err(err) => {
+            return Err(anyhow!(
+                "Issue while decoding response from price quote api, err: {}, response_body: {}",
+                err,
+                response_body
+            ));
+        }
+    };
+
     tracing::debug!("Euler price request took {:?}", start.elapsed());
     Ok(response.data)
 }
