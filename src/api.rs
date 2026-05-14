@@ -42,7 +42,7 @@ pub async fn serve(state: BotState) {
         Ok(listener) => listener,
         Err(err) => {
             tracing::error!(
-                "Could not bind the API to the port, unable to start API service, err: {}",
+                "Could not bind the API to the port, unable to start API service, err: {:?}",
                 err
             );
             return;
@@ -56,7 +56,7 @@ pub async fn serve(state: BotState) {
             info!("Stopped serving observability API");
         }
         Err(err) => {
-            tracing::error!("Issue when serving observability API, err: {}", err);
+            tracing::error!("Issue when serving observability API, err: {:?}", err);
         }
     };
 }

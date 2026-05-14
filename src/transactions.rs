@@ -29,7 +29,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 Ok(price) => price,
                 Err(err) => {
                     error!(
-                        "Could not fetch gas price from the RPC, skipping liquidation, err: {}",
+                        "Could not fetch gas price from the RPC, skipping liquidation, err: {:?}",
                         err
                     );
                     continue;
@@ -42,7 +42,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 Err(err) => {
                     error!(
                         account =? liquidation.account(),
-                        "Error simulating liquidation, err: {}", err
+                        "Error simulating liquidation, err: {:?}", err
                     );
                     continue;
                 }
@@ -72,7 +72,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 Err(err) => {
                     error!(
                         account =? liquidation.account(),
-                        "Issue sending transaction, err: {}",
+                        "Issue sending transaction, err: {:?}",
                         err
                     );
                     continue;
@@ -91,7 +91,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 Err(err) => {
                     error!(
                         account =? liquidation.account(),
-                        "Error while waiting for liquidation transaction receipt, err: {}",
+                        "Error while waiting for liquidation transaction receipt, err: {:?}",
                         err
                     );
                     continue;

@@ -103,7 +103,7 @@ async fn main() {
         }
         Err(err) => {
             error!(
-                "Could not fetch the chain id for {} when attempting to do a sanity check, err: {}",
+                "Could not fetch the chain id for {} when attempting to do a sanity check, err: {:?}",
                 config.chain_id, err
             );
             return;
@@ -140,7 +140,7 @@ async fn main() {
             .await
             .inspect_err(|e| {
                 error!(
-                    "Polling of oracles had a critical error, it is no longer operating. err: {}",
+                    "Polling of oracles had a critical error, it is no longer operating. err: {:?}",
                     e
                 )
             });
@@ -157,7 +157,7 @@ async fn main() {
             let network = match Anvil::new().fork(config.rpc_url.clone()).try_spawn() {
                 Ok(network) => network,
                 Err(err) => {
-                    error!("Could not fork the chain, err: {}", err);
+                    error!("Could not fork the chain, err: {:?}", err);
                     return;
                 }
             };
@@ -262,7 +262,7 @@ pub async fn run(
                 let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &mut vaults, &oracles).await {
                     Ok(unhealthy_accounts) => unhealthy_accounts,
                     Err(e) => {
-                        tracing::error!("Error while refreshing, err:{}", e);
+                        tracing::error!("Error while refreshing, err:{:?}", e);
                         continue;
                     }
                 };
@@ -270,7 +270,7 @@ pub async fn run(
                 // Signal that the bot is healthy and finished syncing.
                 if let Some(ref state_sender) = state {
                     let _ = state_sender.send(BotHealth::Healthy).inspect_err(|e| {
-                        tracing::warn!("Could not signal healthy state due to error with sender, err: {}", e);
+                        tracing::warn!("Could not signal healthy state due to error with sender, err: {:?}", e);
                     });
                 }
 
@@ -279,7 +279,7 @@ pub async fn run(
 
                 // Turn the unhealthy accounts into prepared liquidations.
                 let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
-                    tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
+                    tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {:?}", e);
                 }).unwrap_or_default();
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
@@ -356,7 +356,7 @@ pub async fn run(
                             tracing::debug!("Account {} was not indexed due to it being filtered out by the vault filter for vault {}", account_event, vault);
                         },
                         Err(lens::FetchAccountError::Other(e)) => {
-                            tracing::error!("Issue while fetching new account after finding an event onchain, err: {}", e);
+                            tracing::error!("Issue while fetching new account after finding an event onchain, err: {:?}", e);
                         },
                     }
 
@@ -407,7 +407,7 @@ pub async fn prepare_liquidations(
                     // We log the error and then skip this liquidation as we need to attempt to
                     // process other liquidations.
                     tracing::error!(
-                        "Could not fetch pyth data as we were attempting a liquidation, err:{}",
+                        "Could not fetch pyth data as we were attempting a liquidation, err: {:?}",
                         e
                     );
                     continue;
@@ -439,7 +439,7 @@ pub async fn prepare_liquidations(
             }
             Err(e) => tracing::error!(
                 account =? account.address,
-                "Issue when attempting to liquidate account, err: {}",
+                "Issue when attempting to liquidate account, err: {:?}",
                 e
             ),
         }
@@ -515,7 +515,7 @@ pub async fn refresh_and_check_all(
                 );
             }
             Err(lens::FetchAccountError::Other(e)) => {
-                tracing::warn!("Issue while fetching account during re-sync, err: {}", e);
+                tracing::warn!("Issue while fetching account during re-sync, err: {:?}", e);
             }
         }
     }
@@ -532,7 +532,7 @@ pub async fn refresh_and_check_all(
         .filter(|a| match a.calculate_health(oracles) {
             Ok(health) => health.is_unhealthy(),
             Err(err) => {
-                tracing::error!("Error while checking account health: {}", err);
+                tracing::error!("Error while checking account health: {:?}", err);
                 false
             }
         })

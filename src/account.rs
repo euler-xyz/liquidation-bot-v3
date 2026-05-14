@@ -118,11 +118,12 @@ pub async fn watch_chain_for_accounts(
                         // Send the update over the channel.
                         if let Err(err) = account_update_channel.send(decoded.account).await {
                             error!(
-                                "Issue when attempting to send update over accounts channel, it was likely dropped, err: {err}"
+                                "Issue when attempting to send update over accounts channel, it was likely dropped, err: {:?}",
+                                err
                             );
                         }
                     }
-                    Err(e) => error!("Decode error: {e}"),
+                    Err(e) => error!("Decode error: {:?}", e),
                 }
             }
 

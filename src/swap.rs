@@ -257,10 +257,15 @@ impl<T: PriceAsset> EulerSwapApi<T> {
 
         // Make sure that the response was a success before attempting to deserialize the swapquote.
         if !response_body.success {
-            return Err(anyhow!(
-                "Swap API responded with: {}",
-                response_body.message.unwrap_or_default()
-            ));
+            let message = response_body.message.unwrap_or_default();
+
+            // The swap api reports no quotes as an error, but for us that should not be an error.
+            // So we instead just report back as not having found any quotes.
+            if message == "Swap quote not found" {
+                return Ok(vec![]);
+            }
+
+            return Err(anyhow!("Swap API responded with: {}", message));
         }
 
         match response_body.data {
@@ -353,7 +358,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                 }
                 Err(err) => {
                     tracing::debug!(
-                        "Error while simulating quote execution and liquidation, err: {}",
+                        "Error while simulating quote execution and liquidation, err: {:?}",
                         err
                     );
                     // The liquidation call with this swap failed, continueing onto the next.

@@ -62,7 +62,7 @@ async fn get_euler_price(
         Ok(data) => data,
         Err(err) => {
             return Err(anyhow!(
-                "Issue while decoding response from price quote api, err: {}, response_body: {}",
+                "Issue while decoding response from price quote api, err: {:?}, response_body: {}",
                 err,
                 response_body
             ));

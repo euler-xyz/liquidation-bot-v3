@@ -170,7 +170,7 @@ pub async fn prepare_liquidation(
                     }
                     Err(err) => {
                         tracing::error!(
-                            "Issue while attempting to find a swap route, err: {}",
+                            "Issue while attempting to find a swap route, err: {:?}",
                             err
                         );
                         continue;
@@ -295,7 +295,7 @@ pub async fn get_shares_to_underlying(provider: &DynProvider, vault: Address) ->
         .await
         .map_err(|e| {
             anyhow!(
-                "Couldn't fetch shares to underlying ratio for vault {}, err: {}",
+                "Couldn't fetch shares to underlying ratio for vault {}, err: {:?}",
                 vault,
                 e
             )
