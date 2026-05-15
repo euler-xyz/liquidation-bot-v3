@@ -29,7 +29,7 @@ use crate::{
     },
     swap::{EulerSwapApi, SwapQuoteProvider},
     transactions::execute_liquidation_queue,
-    types::{Account, VaultAssetPosition, VaultDebtPosition},
+    types::{Account, VaultBorrowPosition, VaultCollateralPosition},
     vaults::Vaults,
 };
 use anyhow::{Result, anyhow};
@@ -333,7 +333,7 @@ pub async fn run(
                 }
             },
             // Track when an event happens on chain involving an account that potentially updates
-            // its assets and debts, we (re)fetch the account and add it to our tracker.
+            // its collaterals and borrows, we (re)fetch the account and add it to our tracker.
             Some(account_event) = account_update_channel.recv() => {
                 // Fetch the account.
                 match fetch_account(
@@ -620,19 +620,19 @@ pub async fn fetch_all_accounts(
 
     let mut accounts = Vec::new();
     for (account_address, balances) in map.into_iter() {
-        let mut assets = Vec::new();
-        let mut debts = Vec::new();
+        let mut collaterals = Vec::new();
+        let mut borrows = Vec::new();
 
         for balance in balances.into_iter() {
             if balance.debt > U256::ZERO {
-                debts.push(VaultDebtPosition {
+                borrows.push(VaultBorrowPosition {
                     amount: balance.debt,
                     vault: vaults.get_or_fetch(provider, balance.vault).await?,
                 });
             }
 
             if balance.balance > U256::ZERO {
-                assets.push(VaultAssetPosition {
+                collaterals.push(VaultCollateralPosition {
                     amount: balance.balance,
                     vault: vaults.get_or_fetch(provider, balance.vault).await?,
                 });
@@ -641,8 +641,8 @@ pub async fn fetch_all_accounts(
 
         accounts.push(Account {
             address: account_address,
-            debt: debts,
-            assets,
+            borrows,
+            collaterals,
         });
     }
 
@@ -759,7 +759,7 @@ mod test {
         }
 
         // Sanity check, as we later also check this and then it will be empty.
-        assert!(!account.debt.is_empty());
+        assert!(!account.borrows.is_empty());
 
         let liquidation = prepare_liquidation(
             &provider,
@@ -795,7 +795,7 @@ mod test {
         .unwrap();
 
         // Check that they no longer have any debt.
-        assert!(account.debt.is_empty());
+        assert!(account.borrows.is_empty());
     }
 
     #[tokio::test]
@@ -850,7 +850,7 @@ mod test {
         }
 
         // Sanity check, as we later also check this and then it will be empty.
-        assert!(!account.debt.is_empty());
+        assert!(!account.borrows.is_empty());
 
         let liquidation = prepare_liquidation(
             &provider.clone(),
@@ -917,7 +917,7 @@ mod test {
         .unwrap();
 
         // Check that they no longer have any debt.
-        assert!(account.debt.is_empty());
+        assert!(account.borrows.is_empty());
     }
 
     /// Waits up to 30 seconds for a new block to be mined, polling once per second.

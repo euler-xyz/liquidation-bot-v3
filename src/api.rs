@@ -74,7 +74,7 @@ async fn health(State(state): State<BotState>) -> (StatusCode, Json<BotHealth>) 
 
 #[derive(Serialize)]
 struct AccountInformation {
-    // Details on the account and its assets/debts.
+    // Details on the account and its collaterals/borrows.
     account: Account,
     /// The current health of the account.
     health: Option<AccountSolvency>,

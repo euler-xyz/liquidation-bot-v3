@@ -36,18 +36,18 @@ pub struct OracleIdentifier {
 #[derive(Clone, Debug, Serialize)]
 pub struct Account {
     pub address: Address,
-    pub debt: Vec<VaultDebtPosition>,
-    pub assets: Vec<VaultAssetPosition>,
+    pub borrows: Vec<VaultBorrowPosition>,
+    pub collaterals: Vec<VaultCollateralPosition>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct VaultAssetPosition {
+pub struct VaultCollateralPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct VaultDebtPosition {
+pub struct VaultBorrowPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,
 }
@@ -97,9 +97,9 @@ impl Ltv {
 }
 
 #[cfg(test)]
-impl VaultDebtPosition {
-    pub fn generate_random() -> VaultDebtPosition {
-        VaultDebtPosition {
+impl VaultBorrowPosition {
+    pub fn generate_random() -> Self {
+        VaultBorrowPosition {
             amount: U256::from(100_000_000),
             vault: Arc::from(Vault::generate_random()),
         }
@@ -107,9 +107,9 @@ impl VaultDebtPosition {
 }
 
 #[cfg(test)]
-impl VaultAssetPosition {
-    pub fn generate_random() -> VaultAssetPosition {
-        VaultAssetPosition {
+impl VaultCollateralPosition {
+    pub fn generate_random() -> Self {
+        VaultCollateralPosition {
             amount: U256::from(100_000_000),
             vault: Arc::from(Vault::generate_random()),
         }

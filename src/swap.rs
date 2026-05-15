@@ -290,10 +290,10 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         // Build the params to call the swap api with for this liquidation.
         let params = &SwapParams {
             chain_id: self.chain_id.to_string(),
-            token_in: liq.asset().vault.asset,
-            token_out: liq.debt().vault.asset,
+            token_in: liq.collateral().vault.asset,
+            token_out: liq.borrow().vault.asset,
             receiver: self.swapper_address,
-            vault_in: liq.asset().vault.address,
+            vault_in: liq.collateral().vault.address,
             origin: self.liquidator_eoa,
             account_in: self.swapper_address,
             account_out: self.swapper_address,
@@ -347,7 +347,11 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                     let profit = quote.amount_out - liq.repay_amount();
                     let profit_in_native = self
                         .pricing
-                        .quote(liq.asset().vault.asset, profit, self.wrapped_native_asset)
+                        .quote(
+                            liq.collateral().vault.asset,
+                            profit,
+                            self.wrapped_native_asset,
+                        )
                         .await?;
 
                     // NOTE: We could already determine here if this swap is profitable, as we just

@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use itertools::Itertools;
 use tracing::error;
 
-use crate::types::{Account, OracleIdentifier, VaultAssetPosition, VaultDebtPosition};
+use crate::types::{Account, OracleIdentifier, VaultBorrowPosition, VaultCollateralPosition};
 
 pub struct AccountsTracker {
     accounts: DashMap<Address, Account>,
@@ -23,21 +23,21 @@ impl AccountsTracker {
     pub fn add_as_account(
         &self,
         address: Address,
-        assets: Vec<VaultAssetPosition>,
-        debt: Vec<VaultDebtPosition>,
+        collaterals: Vec<VaultCollateralPosition>,
+        borrows: Vec<VaultBorrowPosition>,
     ) {
         self.add(Account {
             address,
-            assets,
-            debt,
+            collaterals,
+            borrows,
         });
     }
 
     pub fn add(&self, account: Account) {
-        // Skip accounts that have no debt, these are not of interest to us.
+        // Skip accounts that have no borrows, these are not of interest to us.
         // TODO: Check if we are already tracking this account and this was intended as an update,
         // if so we remove the account.
-        if account.debt.is_empty() {
+        if account.borrows.is_empty() {
             return;
         }
 
@@ -113,13 +113,13 @@ mod test {
         accounts::AccountsTracker,
         config::VaultFilter,
         lens::fetch_account,
-        types::{OracleIdentifier, Vault, VaultAssetPosition, VaultDebtPosition},
+        types::{OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition},
         vaults::Vaults,
     };
 
     #[tokio::test]
     async fn impacted_finds_accounts() {
-        let mut accounts = AccountsTracker::new();
+        let accounts = AccountsTracker::new();
 
         let account_to_find = Address::random();
         let oracle = OracleIdentifier {
@@ -132,7 +132,7 @@ mod test {
         accounts.add_as_account(
             account_to_find,
             vec![
-                VaultAssetPosition {
+                VaultCollateralPosition {
                     amount: U256::from(100_000_000),
                     vault: Arc::from(Vault {
                         address: Address::random(),
@@ -145,9 +145,9 @@ mod test {
                         shares_to_underlying_ratio: U256::from(100_000),
                     }),
                 },
-                VaultAssetPosition::generate_random(),
+                VaultCollateralPosition::generate_random(),
             ],
-            vec![VaultDebtPosition {
+            vec![VaultBorrowPosition {
                 amount: U256::from(100_000_000),
                 vault: Arc::from(Vault {
                     address: Address::random(),
@@ -166,10 +166,10 @@ mod test {
             accounts.add_as_account(
                 Address::random(),
                 vec![
-                    VaultAssetPosition::generate_random(),
-                    VaultAssetPosition::generate_random(),
+                    VaultCollateralPosition::generate_random(),
+                    VaultCollateralPosition::generate_random(),
                 ],
-                vec![VaultDebtPosition::generate_random()],
+                vec![VaultBorrowPosition::generate_random()],
             );
         }
 

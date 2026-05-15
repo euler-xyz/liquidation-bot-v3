@@ -12,7 +12,7 @@ use crate::{
     account::ILiquidation,
     pyth::PythFeedInput,
     swap::{SwapPayload, SwapQuoteProvider},
-    types::{Account, VaultAssetPosition, VaultDebtPosition},
+    types::{Account, VaultBorrowPosition, VaultCollateralPosition},
 };
 
 sol! {
@@ -49,10 +49,10 @@ sol! {
 pub struct PreparedLiquidation {
     // The account this liquidation is regarding.
     account: Account,
-    // The debt thats being repaid.
-    debt: VaultDebtPosition,
+    // The borrow thats being repaid.
+    borrow: VaultBorrowPosition,
     // The asset that is being liquidated.
-    asset: VaultAssetPosition,
+    collateral: VaultCollateralPosition,
     // The amount of debt that will be repaid.
     repay_amount: U256,
     // The amount of collateral being seized.
@@ -77,17 +77,17 @@ pub async fn prepare_liquidation(
     liquidator_address: Address,
     account: Account,
 ) -> Result<Option<PreparedLiquidation>> {
-    let debt = match account.debt.first() {
-        Some(debt) => debt,
+    let borrow = match account.borrows.first() {
+        Some(borrow) => borrow,
         // We can't liquidate an account that does not have any debt.
         None => return Ok(None),
     };
 
-    let vault_address = debt.vault.address;
+    let vault_address = borrow.vault.address;
     let vault = ILiquidation::new(vault_address, provider);
 
     let mut prepared_liquidation: Option<PreparedLiquidation> = None;
-    for asset in account.assets.iter() {
+    for asset in account.collaterals.iter() {
         // Calculate the result of the liquidation.
         let (max_repay, max_yield) = match pyth.clone() {
             Some(pyth) => {
@@ -125,7 +125,7 @@ pub async fn prepare_liquidation(
         let vault = Vault::new(asset.vault.address, provider);
         let max_assets = vault.convertToAssets(max_yield).call().await?;
 
-        let new_potential_liquidation = match debt.vault.asset == asset.vault.asset {
+        let new_potential_liquidation = match borrow.vault.asset == asset.vault.asset {
             true => {
                 // Since these are in the same asset, the assets need to be more than the repay.
                 if max_assets < max_repay {
@@ -134,8 +134,8 @@ pub async fn prepare_liquidation(
 
                 PreparedLiquidation {
                     account: account.clone(),
-                    debt: debt.clone(),
-                    asset: asset.clone(),
+                    borrow: borrow.clone(),
+                    collateral: asset.clone(),
                     repay_amount: max_repay,
                     seized_collateral_amount: max_assets,
                     pyth: pyth.clone(),
@@ -149,8 +149,8 @@ pub async fn prepare_liquidation(
             false => {
                 let liquidation = PreparedLiquidation {
                     account: account.clone(),
-                    debt: debt.clone(),
-                    asset: asset.clone(),
+                    borrow: borrow.clone(),
+                    collateral: asset.clone(),
                     repay_amount: max_repay,
                     seized_collateral_amount: max_assets,
                     pyth: pyth.clone(),
@@ -198,10 +198,10 @@ impl PreparedLiquidation {
     pub fn into_transaction(self, receiver: Address) -> TransactionRequest {
         let params = LiquidationParams {
             violatorAddress: self.account.address,
-            vault: self.debt.vault.address,
-            borrowedAsset: self.debt.vault.asset,
-            collateralVault: self.asset.vault.address,
-            collateralAsset: self.asset.vault.asset,
+            vault: self.borrow.vault.address,
+            borrowedAsset: self.borrow.vault.asset,
+            collateralVault: self.collateral.vault.address,
+            collateralAsset: self.collateral.vault.asset,
             repayAmount: self.repay_amount,
             seizedCollateralAmount: self.seized_collateral_amount,
             receiver,
@@ -253,12 +253,12 @@ impl PreparedLiquidation {
         self.profit_in_asset
     }
 
-    pub fn asset(&self) -> VaultAssetPosition {
-        self.asset.clone()
+    pub fn collateral(&self) -> VaultCollateralPosition {
+        self.collateral.clone()
     }
 
-    pub fn debt(&self) -> VaultDebtPosition {
-        self.debt.clone()
+    pub fn borrow(&self) -> VaultBorrowPosition {
+        self.borrow.clone()
     }
 
     pub fn repay_amount(&self) -> U256 {

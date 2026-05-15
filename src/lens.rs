@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::{
     Vaults,
     config::VaultFilter,
-    types::{Account, VaultAssetPosition, VaultDebtPosition},
+    types::{Account, VaultBorrowPosition, VaultCollateralPosition},
 };
 
 sol! {
@@ -127,8 +127,8 @@ pub async fn fetch_account(
 
     debug!("Took {:?}", start.elapsed());
 
-    let mut debt = Vec::new();
-    let mut assets = Vec::new();
+    let mut borrows = Vec::new();
+    let mut collaterals = Vec::new();
     for v in result.vaultAccountInfo.iter() {
         if !v.borrowed.is_zero() {
             // Check the filter to see if we should be indexing this.
@@ -136,7 +136,7 @@ pub async fn fetch_account(
                 return Err(FetchAccountError::FilteredOut(v.vault));
             }
 
-            debt.push(VaultDebtPosition {
+            borrows.push(VaultBorrowPosition {
                 amount: v.borrowed,
                 vault: vaults
                     .get_or_fetch(&provider, v.vault)
@@ -146,7 +146,7 @@ pub async fn fetch_account(
         }
 
         if !v.assets.is_zero() {
-            assets.push(VaultAssetPosition {
+            collaterals.push(VaultCollateralPosition {
                 amount: v.assets,
                 vault: vaults
                     .get_or_fetch(&provider, v.vault)
@@ -158,7 +158,7 @@ pub async fn fetch_account(
 
     Ok(Account {
         address: account,
-        debt,
-        assets,
+        borrows,
+        collaterals,
     })
 }

@@ -19,9 +19,9 @@ use crate::{
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountSolvency {
     pub account: Address,
-    pub asset_value: U256,
-    pub debt_value: U256,
-    pub accounted_in: Address,
+    pub collateral_value: U256,
+    pub borrow_value: U256,
+    pub unit_of_account: Address,
 }
 
 sol! {
@@ -138,21 +138,22 @@ pub async fn watch_chain_for_accounts(
 
 impl AccountSolvency {
     pub fn is_unhealthy(&self) -> bool {
-        self.debt_value > self.asset_value
+        self.borrow_value > self.collateral_value
     }
 }
 
 impl Account {
     /// Get all the vaults this account has relations to.
     pub fn vaults(&self) -> Vec<Arc<Vault>> {
-        let mut vaults: Vec<Arc<Vault>> = self.assets.iter().map(|a| a.vault.clone()).collect();
-        vaults.extend(self.debt.iter().map(|d| d.vault.clone()));
+        let mut vaults: Vec<Arc<Vault>> =
+            self.collaterals.iter().map(|a| a.vault.clone()).collect();
+        vaults.extend(self.borrows.iter().map(|d| d.vault.clone()));
         vaults
     }
 
     pub fn dependent_on(&self) -> Vec<OracleIdentifier> {
-        let debt = match self.debt.first() {
-            Some(debt) => debt,
+        let debt = match self.borrows.first() {
+            Some(borrow) => borrow,
 
             // If there is no debt then the account does not have a health score.
             None => return vec![],
@@ -160,7 +161,7 @@ impl Account {
 
         // Add the asset oracles.
         let mut oracles: Vec<OracleIdentifier> = self
-            .assets
+            .collaterals
             .iter()
             .map(|asset| OracleIdentifier {
                 base_asset: asset.vault.asset,
@@ -180,26 +181,26 @@ impl Account {
     }
 
     pub fn calculate_health(&self, prices: &OraclesCache) -> Result<AccountSolvency> {
-        let debt = match self.debt.first() {
-            Some(debt) => debt,
-            None => bail!("An account with no debt does not have a health score."),
+        let borrow = match self.borrows.first() {
+            Some(borrow) => borrow,
+            None => bail!("An account with no borrow does not have a health score."),
         };
 
-        let debt_value = prices.get_quote(
+        let borrow_value = prices.get_quote(
             &OracleIdentifier {
-                base_asset: debt.vault.asset,
-                quote_asset: debt.vault.unit_of_account,
-                adapter: debt.vault.adapter,
+                base_asset: borrow.vault.asset,
+                quote_asset: borrow.vault.unit_of_account,
+                adapter: borrow.vault.adapter,
             },
-            debt.amount,
+            borrow.amount,
         )?;
 
         let total_assets = self
-            .assets
+            .collaterals
             .iter()
             .map(|a| {
                 // Take into acccount the liquidation LTV.
-                let amount = match debt.vault.ltvs.get(&a.vault.address) {
+                let amount = match borrow.vault.ltvs.get(&a.vault.address) {
                     Some(ltv) => {
                         // Convert the amount into shares.
                         let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(100_000);
@@ -208,7 +209,7 @@ impl Account {
                         amount * ltv.current_liquidation_ltv() / U256::from(10_000)
                     },
                     None => {
-                        debug!( controller =? debt.vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
+                        debug!( controller =? borrow .vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
                         // This asset is not supported by the controller so its value is 0.
                         U256::ZERO
                     }
@@ -217,8 +218,8 @@ impl Account {
                 prices.get_quote(
                     &OracleIdentifier {
                         base_asset: a.vault.asset,
-                        quote_asset: debt.vault.unit_of_account,
-                        adapter: debt.vault.adapter,
+                        quote_asset: borrow.vault.unit_of_account,
+                        adapter: borrow .vault.adapter,
                     },
                     amount,
                 )
@@ -230,9 +231,9 @@ impl Account {
         // Calculate the asset value.
         Ok(AccountSolvency {
             account: self.address,
-            asset_value: total_assets,
-            debt_value,
-            accounted_in: debt.vault.unit_of_account,
+            collateral_value: total_assets,
+            borrow_value,
+            unit_of_account: borrow.vault.unit_of_account,
         })
     }
 }
