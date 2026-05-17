@@ -8,7 +8,7 @@ wrapped_native_asset_address = "0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A"
 oracle_lens_address = "0x0dE96d33afF54F3e8750567F6038A05c6D3aAa96"
 vault_lens_address = "0x13958d27dbCEce91aafA13C4fD4772efb1C23e15"
 account_lens_address = "0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee"
-liquidator_address = "0xAAF93d5475d092EA68a748137eE19D8130918392"
+liquidator_address = "0x0Fea16517f670bc1e1e26b38C6d9d2502Fa6AFf6"
 # Liquidation bot v2 address is for now the profit receiver.
 profit_receiver = "0x8cbB534874bab83e44a7325973D2F04493359dF8"
 
