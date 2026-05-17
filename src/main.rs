@@ -65,6 +65,17 @@ async fn main() {
         }
     };
 
+    // Sanity check the configuration file.
+    match config.validate_config().await {
+        Ok(_) => {
+            info!("Configuration for the chain has been validated successfully");
+        }
+        Err(err) => {
+            error!("Issue while validating configuration of the chain: {err}");
+            return;
+        }
+    }
+
     // Construct the signer.
     let pk_signer: PrivateKeySigner = match config.eoa_private_key.parse::<PrivateKeySigner>() {
         Ok(signer) => {

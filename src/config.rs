@@ -1,4 +1,7 @@
-use alloy::primitives::Address;
+use alloy::{
+    primitives::Address,
+    providers::{Provider, ProviderBuilder},
+};
 use anyhow::Result;
 use figment::{
     Figment,
@@ -103,6 +106,56 @@ pub struct Config {
     // Observability settings
     #[serde(default)]
     pub enable_observability_api: bool,
+}
+
+impl Config {
+    /// Attempts to ensure the config is valid
+    pub async fn validate_config(&self) -> Result<()> {
+        // Build the provider.
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.clone());
+
+        // Get the chain id, this both ensures the RPC url is valid and we check that its the
+        // correct RPC for this config.
+        let chain_id = provider.get_chain_id().await?;
+        if chain_id != self.chain_id {
+            anyhow::bail!(
+                "The configured RPC reports a chain_id ({}) that is not the same as the chain_id in the configuration file ({})",
+                chain_id,
+                self.chain_id
+            );
+        }
+
+        // Perform a sanity check on all contracts that are part of the configuration.
+        check_address(&provider, self.evc_address, "EVC").await?;
+        check_address(&provider, self.pyth_address, "Pyth").await?;
+        check_address(&provider, self.swapper_address, "swapper").await?;
+        check_address(
+            &provider,
+            self.wrapped_native_asset_address,
+            "wrapped native asset",
+        )
+        .await?;
+        check_address(&provider, self.oracle_lens_address, "oracle lens").await?;
+        check_address(&provider, self.account_lens_address, "account lens").await?;
+        check_address(&provider, self.vault_lens_address, "vault lens").await?;
+        check_address(&provider, self.liquidator_address, "liquidator").await?;
+
+        Ok(())
+    }
+}
+
+async fn check_address<P: Provider>(provider: &P, address: Address, label: &str) -> Result<()> {
+    if provider.get_code_at(address).await?.is_empty() {
+        let chain = provider.get_chain_id().await?;
+        anyhow::bail!(
+            "The {} address ({}) for this chain ({}) does not contain any bytecode, this is a misconfiguration",
+            label,
+            address,
+            chain
+        );
+    }
+
+    Ok(())
 }
 
 pub fn get_config() -> Result<Config> {
