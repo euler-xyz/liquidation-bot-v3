@@ -182,3 +182,53 @@ pub fn get_config() -> Result<Config> {
 
     Ok(config)
 }
+
+#[cfg(test)]
+mod test {
+    use std::{env, path::Path, str::FromStr};
+
+    use alloy::signers::local::PrivateKeySigner;
+
+    use crate::config::get_config;
+
+    #[tokio::test]
+    /// Validates the configuration files against public rpcs.
+    async fn validate_configuration_files() {
+        env::set_current_dir(Path::new("./configs")).expect("failed to cd into ./configs");
+
+        validate_configuration_file("https://eth.drpc.org", 1).await;
+        validate_configuration_file("https://bsc.drpc.org", 56).await;
+        validate_configuration_file("https://unichain.drpc.org", 130).await;
+        validate_configuration_file("https://rpc4.monad.xyz", 143).await;
+        validate_configuration_file("https://sonic.drpc.org", 146).await;
+        validate_configuration_file("https://base.drpc.org", 8453).await;
+        validate_configuration_file("https://plasma.drpc.org", 9745).await;
+        validate_configuration_file("https://arbitrum.drpc.org", 42161).await;
+        validate_configuration_file("https://avalanche.drpc.org", 43114).await;
+        validate_configuration_file("https://linea.drpc.org", 59144).await;
+        validate_configuration_file("https://berachain.drpc.org", 80094).await;
+    }
+
+    async fn validate_configuration_file(rpc_url: &str, chain_id: u64) {
+        // Generate an EOA wallet.
+        // NOTE: This is not a private key that is ever used, it holds no funds, it is just a
+        // placeholder here to pass some checks about the validity of the configuration file.
+        let private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        let public_address = PrivateKeySigner::from_str(private_key)
+            .unwrap()
+            .address()
+            .to_string();
+
+        // We need to set some environment variables to act like the production environment.
+        unsafe {
+            env::set_var("CHAIN_ID", chain_id.to_string());
+            env::set_var(format!("RPC_URL_{}", chain_id), rpc_url);
+            env::set_var("SUBGRAPH_URL_PREFIX", "https://mock-subgraph-url.com/");
+            env::set_var("EOA_ADDRESS", public_address);
+            env::set_var("EOA_PRIVATE_KEY", private_key);
+        }
+
+        let config = get_config().unwrap();
+        config.validate_config().await.unwrap();
+    }
+}
