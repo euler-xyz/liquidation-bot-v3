@@ -1,9 +1,10 @@
 use alloy::{
+    network::TransactionBuilder,
     primitives::{Address, U256},
     providers::{Provider, WalletProvider},
 };
 use tokio::sync::mpsc::Receiver;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::liquidation::PreparedLiquidation;
 
@@ -65,6 +66,21 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 "Executing transaction to liquidate {}", liquidation.account()
             );
 
+            // NOTE: For some reason alloy will use the estimated gas as the gas_limit. However
+            // because EVC calls get quite a bit of a gas refund after using and then clearing
+            // storage, the amount of gas that gets used is different than what the limit should be.
+            //
+            // Example: A transaction may only use 800k gas, but during execution it uses 1M gas and
+            // then received a 200k refund. If we were to set a gas limit of 810k the transaction
+            // would run out of gas.
+            //
+            // For this reason we use the gas estimation to see if a transaction would be
+            // profitable, but we set the gas limit ourselves to be higher. To account for this
+            // refund.
+
+            // We add a 100% margin.
+            let tx = tx.with_gas_limit(gas_usage * 2);
+
             // NOTE: We do not wait for any extra confirmations as there is essentially no risk
             // of a re-org.
             let tx = match provider.send_transaction(tx).await {
@@ -81,12 +97,21 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
 
             match tx {
                 Ok(receipt) => {
-                    info!(
-                        account =? liquidation.account(),
-                        "Account {} liquidation succeeded, transaction hash {} included",
-                        liquidation.account(),
-                        receipt.transaction_hash
-                    );
+                    if receipt.status() {
+                        info!(
+                            account =? liquidation.account(),
+                            "Account {} liquidation succeeded, transaction hash {} included",
+                            liquidation.account(),
+                            receipt.transaction_hash
+                        );
+                    } else {
+                        warn!(
+                            account =? liquidation.account(),
+                            "Account {} liquidation reverted, transaction hash {}",
+                            liquidation.account(),
+                            receipt.transaction_hash
+                        );
+                    }
                 }
                 Err(err) => {
                     error!(
