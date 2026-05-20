@@ -411,20 +411,29 @@ pub async fn prepare_liquidations(
         }
 
         // Fetch pyth data if needed.
-        let pyth = match !pyth_ids.is_empty() {
-            true => match fetch_pyth_data(provider, config.pyth_address, pyth_ids).await {
-                Ok(data) => Some(data),
-                Err(e) => {
-                    // We log the error and then skip this liquidation as we need to attempt to
-                    // process other liquidations.
-                    tracing::error!(
-                        "Could not fetch pyth data as we were attempting a liquidation, err: {:?}",
-                        e
-                    );
-                    continue;
+        let pyth = match (!pyth_ids.is_empty(), config.pyth_address) {
+            (true, Some(pyth)) => {
+                match fetch_pyth_data(provider, pyth, pyth_ids).await {
+                    Ok(data) => Some(data),
+                    Err(e) => {
+                        // We log the error and then skip this liquidation as we need to attempt to
+                        // process other liquidations.
+                        tracing::error!(
+                            "Could not fetch pyth data as we were attempting a liquidation, err: {:?}",
+                            e
+                        );
+                        continue;
+                    }
                 }
-            },
-            false => None,
+            }
+            (false, _) => None,
+            // Somehow this account its position uses pyth oracle but pyth is not configured for
+            // this chain, this is a critical error.
+            (true, None) => {
+                return Err(anyhow!(
+                    "This account requires us to update pyth oracles, but there is no pyth deployment configured for this chain"
+                ));
+            }
         };
 
         debug!("Checking liquidation for {}", account.address);

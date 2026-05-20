@@ -60,7 +60,7 @@ pub struct Config {
     pub evc_address: Address,
 
     // The address of the pyth contracts.
-    pub pyth_address: Address,
+    pub pyth_address: Option<Address>,
 
     // The address of the swapper contract.
     pub swapper_address: Address,
@@ -127,7 +127,12 @@ impl Config {
 
         // Perform a sanity check on all contracts that are part of the configuration.
         check_address(&provider, self.evc_address, "EVC").await?;
-        check_address(&provider, self.pyth_address, "Pyth").await?;
+
+        // Not all chains (specifically TAC) have a pyth deployment.
+        if let Some(pyth_address) = self.pyth_address {
+            check_address(&provider, pyth_address, "Pyth").await?;
+        }
+
         check_address(&provider, self.swapper_address, "swapper").await?;
         check_address(
             &provider,
@@ -201,11 +206,14 @@ mod test {
         validate_configuration_file("https://unichain.drpc.org", 130).await;
         validate_configuration_file("https://rpc4.monad.xyz", 143).await;
         validate_configuration_file("https://sonic.drpc.org", 146).await;
+        validate_configuration_file("https://rpc.tac.build", 239).await;
+        validate_configuration_file("https://rpc.ankr.com/swell", 1923).await;
         validate_configuration_file("https://base.drpc.org", 8453).await;
         validate_configuration_file("https://plasma.drpc.org", 9745).await;
         validate_configuration_file("https://arbitrum.drpc.org", 42161).await;
         validate_configuration_file("https://avalanche.drpc.org", 43114).await;
         validate_configuration_file("https://linea.drpc.org", 59144).await;
+        validate_configuration_file("https://bob.drpc.org", 60808).await;
         validate_configuration_file("https://berachain.drpc.org", 80094).await;
     }
 

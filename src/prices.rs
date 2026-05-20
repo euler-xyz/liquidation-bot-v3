@@ -143,6 +143,8 @@ impl PriceAsset for EulerPricingApi {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use alloy::primitives::{U256, address};
 
     use crate::prices::{EulerPricingApi, PriceAsset};
@@ -196,4 +198,21 @@ mod test {
         assert!(quote - U256::from(100) < in_amount);
         assert!(quote + U256::from(100) > in_amount);
     }
+
+    // #[tokio::test]
+    // async fn price_eeth_weth() {
+    //     let pricing = EulerPricingApi::new("https://v3.euler.finance/".parse().unwrap(), 1);
+    //     let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+    //
+    //     let price = pricing
+    //         .quote(
+    //             address!("0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee"),
+    //             U256::from_str("64252405929").unwrap(),
+    //             wrapped_native_asset,
+    //         )
+    //         .await
+    //         .unwrap();
+    //
+    //     dbg!(price);
+    // }
 }

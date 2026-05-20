@@ -1,0 +1,19 @@
+swap_url = "https://swap.euler.finance"
+pricing_url = "https://v3.euler.finance"
+subgraph_url_path = "subgraphs/euler-simple-tac/latest/gn"
+evc_address = "0x01F594c66A5561b90Bc782dD0297f294cD668b64"
+# This chain does not have a Pyth deployment.
+# pyth_address = "0x2880aB155794e7179c9eE2e38200202908C17B43"
+swapper_address = "0x5ff07e50D83769861db40C5087753124D389c1c0"
+liquidator_address = "0xa0C9408f0B5D5952C00206708Ab72581c07F1256"
+wrapped_native_asset_address = "0xB63B9f0eb4A6E6f191529D71d4D88cc8900Df2C9"
+oracle_lens_address = "0xB7b2530A8a545504d35F7502E0bf9Fba59F772D6"
+vault_lens_address = "0x8d7512cb0Bb5AbE888Db345E3C122eDf18D182eF"
+account_lens_address = "0x8A3b3E493733e54977B539A4E475Bf16463ecBD6"
+# Liquidation bot v2 address is for now the profit receiver.
+profit_receiver = "0x8cbB534874bab83e44a7325973D2F04493359dF8"
+
+oracle_polling_interval_seconds = 30
+full_resync_and_check_interval_seconds = 3600 
+enable_observability_api = true
+

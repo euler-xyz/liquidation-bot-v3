@@ -26,7 +26,9 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct OraclesCache {
     lens: Address,
-    pyth: Address,
+
+    // Not all chains have a pyth deployment.
+    pyth: Option<Address>,
 
     // The oracles that should be actively tracked.
     active_oracles: Arc<DashSet<OracleIdentifier>>,
@@ -39,7 +41,7 @@ pub struct OraclesCache {
 }
 
 impl OraclesCache {
-    pub fn new(oracle_lens: Address, pyth: Address) -> Self {
+    pub fn new(oracle_lens: Address, pyth: Option<Address>) -> Self {
         OraclesCache {
             lens: oracle_lens,
             pyth,
@@ -188,11 +190,20 @@ impl OraclesCache {
             return Ok(adapter_call.call().await?);
         }
 
-        let pyth_call = match fetch_pyth_data(provider, self.pyth, pyth_ids).await {
-            Ok(data) => {
-                CallItemBuilder::new(Pyth::new(self.pyth, provider).updatePriceFeeds(data.data))
-                    .value(data.cost)
+        // NOTE: handle the edge-case in which no pyth is configured, but we did find a pyth oracle.
+        let pyth = match self.pyth {
+            Some(pyth) => pyth,
+            None => {
+                error!(
+                    "We found a pyth oracle but this chain does not have a pyth deployment configured, this should never happen!"
+                );
+                return Ok(adapter_call.call().await?);
             }
+        };
+
+        let pyth_call = match fetch_pyth_data(provider, pyth, pyth_ids).await {
+            Ok(data) => CallItemBuilder::new(Pyth::new(pyth, provider).updatePriceFeeds(data.data))
+                .value(data.cost),
             // If the API call fails, then we will try to fetch the data from the chain anyway.
             // Perhaps it is still up-to-date.
             Err(e) => {
@@ -576,7 +587,7 @@ mod test {
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
 
-        let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, MAINNET_PYTH);
+        let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, Some(MAINNET_PYTH));
         oracles
             .fetch_latest_price(&provider, oracle.clone())
             .await
