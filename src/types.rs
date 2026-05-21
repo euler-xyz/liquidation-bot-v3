@@ -34,6 +34,27 @@ pub struct OracleIdentifier {
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// This enum reports the reason for why an account is not being liquidated.
+pub enum LiquidationReasoning {
+    // The health status of the account is unknown.
+    Unknown,
+    // The account is healthy there is no reason to consider a liquidation.
+    Healthy,
+    // The account could be liquidated but doing so is unprofitable.
+    Unprofitable,
+    // We can not liquidate this account as we can not find a swap path.
+    NoSwapPath,
+    // There is an error that is preventing this account from being liquidatable.
+    Error(LiquidationReasoningError),
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub enum LiquidationReasoningError {
+    OracleError { oracle: Address, message: String },
+    Other { message: String },
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Account {
     pub address: Address,
     pub borrows: Vec<VaultBorrowPosition>,

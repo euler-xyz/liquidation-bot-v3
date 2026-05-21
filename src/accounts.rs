@@ -3,10 +3,14 @@ use dashmap::DashMap;
 use itertools::Itertools;
 use tracing::error;
 
-use crate::types::{Account, OracleIdentifier, VaultBorrowPosition, VaultCollateralPosition};
+use crate::types::{
+    Account, LiquidationReasoning, OracleIdentifier, VaultBorrowPosition, VaultCollateralPosition,
+};
 
 pub struct AccountsTracker {
     accounts: DashMap<Address, Account>,
+    /// Tracks the status of why the account is or isn't being liquidated.
+    status: DashMap<Address, LiquidationReasoning>,
     /// Maps the accounts that are dependent on a oracle.
     oracle_dependents: DashMap<OracleIdentifier, Vec<Address>>,
 }
@@ -15,6 +19,7 @@ impl AccountsTracker {
     pub fn new() -> Self {
         AccountsTracker {
             accounts: DashMap::new(),
+            status: DashMap::new(),
             oracle_dependents: DashMap::new(),
         }
     }
@@ -46,7 +51,15 @@ impl AccountsTracker {
             od.value_mut().push(account.address);
         });
 
+        let _ = self
+            .status
+            .insert(account.address, LiquidationReasoning::Unknown);
+
         let _ = self.accounts.insert(account.address, account);
+    }
+
+    pub fn set_status(&self, account: &Account, status: LiquidationReasoning) {
+        self.status.insert(account.address, status);
     }
 
     /// Get all unique oracle identifiers.
@@ -96,6 +109,19 @@ impl AccountsTracker {
 
     pub fn all_accounts(&self) -> Vec<Account> {
         self.accounts.iter().map(|a| a.clone()).collect()
+    }
+
+    pub fn all_accounts_with_status(&self) -> Vec<(Account, LiquidationReasoning)> {
+        self.accounts
+            .iter()
+            .map(|a| {
+                let status = match self.status.get(&a.address) {
+                    Some(status) => status.clone(),
+                    None => LiquidationReasoning::Unknown,
+                };
+                (a.clone(), status)
+            })
+            .collect()
     }
 }
 

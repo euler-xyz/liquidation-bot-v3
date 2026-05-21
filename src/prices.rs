@@ -143,11 +143,8 @@ impl PriceAsset for EulerPricingApi {
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
-
-    use alloy::primitives::{U256, address};
-
     use crate::prices::{EulerPricingApi, PriceAsset};
+    use alloy::primitives::{U256, address};
 
     #[tokio::test]
     async fn price_usdc_usdt() {
