@@ -37,6 +37,7 @@ pub struct OracleIdentifier {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
 /// This enum reports the reason for why an account is not being liquidated.
 pub enum LiquidationReasoning {
     // The health status of the account is unknown.
@@ -52,6 +53,7 @@ pub enum LiquidationReasoning {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LiquidationReasoningError {
     OracleError {
         // TODO: Add this back in, for now its not easy to get so skipping it.
