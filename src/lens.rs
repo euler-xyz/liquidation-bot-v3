@@ -156,9 +156,5 @@ pub async fn fetch_account(
         }
     }
 
-    Ok(Account {
-        address: account,
-        borrows,
-        collaterals,
-    })
+    Ok(Account::new(account, borrows, collaterals))
 }

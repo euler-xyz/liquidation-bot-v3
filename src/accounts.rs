@@ -3,7 +3,9 @@ use dashmap::DashMap;
 use itertools::Itertools;
 use tracing::error;
 
-use crate::types::{Account, OracleIdentifier, VaultBorrowPosition, VaultCollateralPosition};
+use crate::types::{
+    Account, LiquidationReasoning, OracleIdentifier, VaultBorrowPosition, VaultCollateralPosition,
+};
 
 pub struct AccountsTracker {
     accounts: DashMap<Address, Account>,
@@ -26,11 +28,7 @@ impl AccountsTracker {
         collaterals: Vec<VaultCollateralPosition>,
         borrows: Vec<VaultBorrowPosition>,
     ) {
-        self.add(Account {
-            address,
-            collaterals,
-            borrows,
-        });
+        self.add(Account::new(address, borrows, collaterals));
     }
 
     pub fn add(&self, account: Account) {

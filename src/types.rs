@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use alloy::primitives::{Address, U256};
 use chrono::{DateTime, Utc};
@@ -34,10 +37,41 @@ pub struct OracleIdentifier {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+/// This enum reports the reason for why an account is not being liquidated.
+pub enum LiquidationReasoning {
+    // The health status of the account is unknown.
+    Unknown,
+    // The account is healthy there is no reason to consider a liquidation.
+    Healthy,
+    // The account could be liquidated but doing so is unprofitable.
+    Unprofitable,
+    // We can not liquidate this account as we can not find a swap path.
+    NoSwapPath,
+    // There is an error that is preventing this account from being liquidatable.
+    Error(LiquidationReasoningError),
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LiquidationReasoningError {
+    OracleError {
+        // TODO: Add this back in, for now its not easy to get so skipping it.
+        // oracle: Address,
+        message: String,
+    },
+    Other {
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Account {
     pub address: Address,
     pub borrows: Vec<VaultBorrowPosition>,
     pub collaterals: Vec<VaultCollateralPosition>,
+
+    status: Arc<RwLock<LiquidationReasoning>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -50,6 +84,29 @@ pub struct VaultCollateralPosition {
 pub struct VaultBorrowPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,
+}
+
+impl Account {
+    pub fn new(
+        address: Address,
+        borrows: Vec<VaultBorrowPosition>,
+        collaterals: Vec<VaultCollateralPosition>,
+    ) -> Self {
+        Account {
+            address,
+            borrows,
+            collaterals,
+            status: Arc::from(RwLock::from(LiquidationReasoning::Unknown)),
+        }
+    }
+
+    // Attempt to update the status. If we can't get the lock then its not an issue as this is
+    // non-critical and only for observability.
+    pub fn set_status(&self, status: LiquidationReasoning) {
+        if let Ok(mut s) = self.status.try_write() {
+            *s = status;
+        }
+    }
 }
 
 impl Ltv {

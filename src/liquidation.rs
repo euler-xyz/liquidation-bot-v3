@@ -12,7 +12,7 @@ use crate::{
     account::ILiquidation,
     pyth::PythFeedInput,
     swap::{SwapPayload, SwapQuoteProvider},
-    types::{Account, VaultBorrowPosition, VaultCollateralPosition},
+    types::{Account, LiquidationReasoning, VaultBorrowPosition, VaultCollateralPosition},
 };
 
 sol! {
@@ -243,6 +243,10 @@ impl PreparedLiquidation {
 
     pub fn account(&self) -> Address {
         self.account.address
+    }
+
+    pub fn set_account_status(&self, status: LiquidationReasoning) {
+        self.account.set_status(status)
     }
 
     pub fn profit(&self) -> U256 {
