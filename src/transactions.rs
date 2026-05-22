@@ -58,6 +58,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                     "Transaction to liquidate {} is not profitable, skipping it.",
                     liquidation.account()
                 );
+                liquidation.set_account_status(crate::types::LiquidationReasoning::Unprofitable);
                 continue;
             }
 

@@ -7,13 +7,16 @@ use alloy::{
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::{sync::mpsc::Sender, time};
 use tracing::{debug, error, info};
 
 use crate::{
     oracles::OraclesCache,
-    types::{Account, OracleIdentifier, Vault},
+    types::{
+        Account, LiquidationReasoning, OracleIdentifier, Vault, VaultBorrowPosition,
+        VaultCollateralPosition,
+    },
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +142,11 @@ pub async fn watch_chain_for_accounts(
 impl AccountSolvency {
     pub fn is_unhealthy(&self) -> bool {
         self.borrow_value > self.collateral_value
+    }
+
+    /// Just here to make code more readable.
+    pub fn is_healthy(&self) -> bool {
+        !self.is_unhealthy()
     }
 }
 

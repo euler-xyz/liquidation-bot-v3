@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use alloy::primitives::{Address, U256};
 use chrono::{DateTime, Utc};
@@ -50,8 +53,14 @@ pub enum LiquidationReasoning {
 
 #[derive(Clone, Debug, Serialize)]
 pub enum LiquidationReasoningError {
-    OracleError { oracle: Address, message: String },
-    Other { message: String },
+    OracleError {
+        // TODO: Add this back in, for now its not easy to get so skipping it.
+        // oracle: Address,
+        message: String,
+    },
+    Other {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -59,6 +68,8 @@ pub struct Account {
     pub address: Address,
     pub borrows: Vec<VaultBorrowPosition>,
     pub collaterals: Vec<VaultCollateralPosition>,
+
+    status: Arc<RwLock<LiquidationReasoning>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -71,6 +82,29 @@ pub struct VaultCollateralPosition {
 pub struct VaultBorrowPosition {
     pub amount: U256,
     pub vault: Arc<Vault>,
+}
+
+impl Account {
+    pub fn new(
+        address: Address,
+        borrows: Vec<VaultBorrowPosition>,
+        collaterals: Vec<VaultCollateralPosition>,
+    ) -> Self {
+        Account {
+            address,
+            borrows,
+            collaterals,
+            status: Arc::from(RwLock::from(LiquidationReasoning::Unknown)),
+        }
+    }
+
+    // Attempt to update the status. If we can't get the lock then its not an issue as this is
+    // non-critical and only for observability.
+    pub fn set_status(&self, status: LiquidationReasoning) {
+        if let Ok(mut s) = self.status.try_write() {
+            *s = status;
+        }
+    }
 }
 
 impl Ltv {

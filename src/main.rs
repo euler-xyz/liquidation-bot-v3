@@ -29,7 +29,10 @@ use crate::{
     },
     swap::{EulerSwapApi, SwapQuoteProvider},
     transactions::execute_liquidation_queue,
-    types::{Account, VaultBorrowPosition, VaultCollateralPosition},
+    types::{
+        Account, LiquidationReasoning, LiquidationReasoningError, VaultBorrowPosition,
+        VaultCollateralPosition,
+    },
     vaults::Vaults,
 };
 use anyhow::{Result, anyhow};
@@ -315,10 +318,22 @@ pub async fn run(
                     .filter(|a| {
                         match a.calculate_health(&oracles) {
                             Ok(health) => {
+                                // Update the accounts and mark them as healthy if they are.
+                                if health.is_healthy() {
+                                    a.set_status(LiquidationReasoning::Healthy);
+                                }
+
                                 health.is_unhealthy()
                             },
                             Err(err) => {
                                 tracing::error!("Error while checking account health: {}", err);
+                                a.set_status(LiquidationReasoning::Error(
+                                        types::LiquidationReasoningError::OracleError {
+                                            message: err.to_string()
+                                        }
+                                    )
+                                );
+
                                 false
                             },
                         }
@@ -422,6 +437,12 @@ pub async fn prepare_liquidations(
                             "Could not fetch pyth data as we were attempting a liquidation, err: {:?}",
                             e
                         );
+
+                        account.set_status(LiquidationReasoning::Error(
+                            LiquidationReasoningError::OracleError {
+                                message: "Unable to fetch Pyth data".to_string(),
+                            },
+                        ));
                         continue;
                     }
                 }
@@ -430,6 +451,12 @@ pub async fn prepare_liquidations(
             // Somehow this account its position uses pyth oracle but pyth is not configured for
             // this chain, this is a critical error.
             (true, None) => {
+                account.set_status(LiquidationReasoning::Error(
+                    LiquidationReasoningError::OracleError {
+                        message: "Unable to fetch Pyth data".to_string(),
+                    },
+                ));
+
                 return Err(anyhow!(
                     "This account requires us to update pyth oracles, but there is no pyth deployment configured for this chain"
                 ));
@@ -452,16 +479,25 @@ pub async fn prepare_liquidations(
                 prepared.push(liquidation)
             }
             Ok(None) => {
+                account.set_status(LiquidationReasoning::NoSwapPath);
                 debug!(
                     "Was not able to find a route to liquidate {}",
                     account.address
                 );
             }
-            Err(e) => tracing::error!(
-                account =? account.address,
-                "Issue when attempting to liquidate account, err: {:?}",
-                e
-            ),
+            Err(e) => {
+                account.set_status(LiquidationReasoning::Error(
+                    LiquidationReasoningError::Other {
+                        message: "Could not prepare the liquidation".to_string(),
+                    },
+                ));
+
+                tracing::error!(
+                    account =? account.address,
+                    "Issue when attempting to liquidate account, err: {:?}",
+                    e
+                )
+            }
         }
     }
 
@@ -550,9 +586,22 @@ pub async fn refresh_and_check_all(
         .all_accounts()
         .iter()
         .filter(|a| match a.calculate_health(oracles) {
-            Ok(health) => health.is_unhealthy(),
+            Ok(health) => {
+                // Update the accounts and mark them as healthy if they are.
+                if health.is_healthy() {
+                    a.set_status(LiquidationReasoning::Healthy);
+                }
+
+                health.is_unhealthy()
+            }
             Err(err) => {
-                tracing::error!("Error while checking account health: {:?}", err);
+                tracing::error!("Error while checking account health: {}", err);
+                a.set_status(LiquidationReasoning::Error(
+                    types::LiquidationReasoningError::OracleError {
+                        message: err.to_string(),
+                    },
+                ));
+
                 false
             }
         })
@@ -659,11 +708,7 @@ pub async fn fetch_all_accounts(
             }
         }
 
-        accounts.push(Account {
-            address: account_address,
-            borrows,
-            collaterals,
-        });
+        accounts.push(Account::new(account_address, borrows, collaterals));
     }
 
     // Fetch the current block
