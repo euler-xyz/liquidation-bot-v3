@@ -231,6 +231,8 @@ impl<T: PriceAsset> EulerSwapApi<T> {
         let url =
             reqwest::Url::parse_with_params(format!("{}swaps", self.base_url).as_str(), &query)?;
 
+        tracing::debug!("making Swap API request to {}", url.clone());
+
         // If set we get the api key that removed the request limit, otherwise we may get limited by
         // cloudflare.
         let api_key = std::env::var("SWAP_API_HEADER_SECRET").unwrap_or_default();
@@ -293,9 +295,9 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             token_in: liq.collateral().vault.asset,
             token_out: liq.borrow().vault.asset,
             receiver: self.swapper_address,
-            vault_in: liq.collateral().vault.address,
+            vault_in: Address::ZERO,
             origin: self.liquidator_eoa,
-            account_in: self.swapper_address,
+            account_in: Address::ZERO,
             account_out: self.swapper_address,
             amount: liq.seized_collateral_amount(),
             target_debt: U256::ZERO,
@@ -309,7 +311,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                 .to_string(),
             is_repay: "false".to_string(),
             dust_account: None,
-            unused_input_receiver: None,
+            unused_input_receiver: Some(self.liquidator_eoa),
             transfer_output_to_receiver: None,
             skip_sweep_deposit_out: Some("true".to_string()),
             routing_override: None,

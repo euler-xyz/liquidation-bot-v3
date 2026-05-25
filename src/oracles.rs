@@ -62,7 +62,10 @@ impl OraclesCache {
 
         // For these new ids we fetch their types and prices.
         for id in new_ids.iter() {
-            let _ = self.fetch_latest_price(provider, id.clone()).await;
+            let result = self.fetch_latest_price(provider, id.clone()).await;
+            if let Err(err) = result {
+                tracing::error!("Could not fetch price for {:?}, err: {:?}", id, err);
+            }
         }
     }
 

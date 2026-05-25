@@ -723,7 +723,9 @@ mod test {
         config::VaultFilter,
         lens::fetch_account,
         liquidation::{PreparedLiquidation, prepare_liquidation},
+        oracles::OraclesCache,
         prices::EulerPricingApi,
+        pyth::fetch_pyth_data,
         swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuoteProvider},
         transactions::execute_liquidation_queue,
         vaults::Vaults,
@@ -733,7 +735,9 @@ mod test {
         primitives::{U256, address, bytes},
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
     };
+    use chrono::{DateTime, Utc};
     use tokio::sync::mpsc;
+    use tracing_subscriber::EnvFilter;
 
     struct MockSwapProvider;
 
@@ -861,6 +865,97 @@ mod test {
 
         // Check that they no longer have any debt.
         assert!(account.borrows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn avax_debug() {
+        // // Configure tracing.
+        // tracing_subscriber::fmt()
+        //     .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
+        //     .init();
+
+        // let block = 86125670;
+        let violator = address!("0x31d961ec888dfdc07b218e1066500afd2f747278");
+        let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
+
+        // Avax configuration.
+        let evc = address!("0xddcbe30A761Edd2e19bba930A977475265F36Fa1");
+        let vault_lens = address!("0x7a2A57a0ed6807c7dbF846cc74aa04eE9DFa7F57");
+        let account_lens = address!("0x08bb803D19e5E2F006C87FEe77c232Dc481cB735");
+        let oracle_lens = address!("0xC5FFCe5f0e6646D93F7E79bD71d268dFC1B7EfD7");
+        let pyth = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
+        let swapper = address!("0x6E1C286e888Ab5911ca37aCeD81365d57eC29a06");
+        let wrapped_native_asset = address!("0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7");
+
+        // Network (mainnet) specific configuration.
+        // let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        let vaults = &mut Vaults::new(vault_lens);
+        let oracles = OraclesCache::new(oracle_lens, Some(pyth));
+        let liquidator_address = address!("0xBd2e8b960A7dF1Ba2107b7F5f43b1A32fD27017F");
+
+        let avax_rpc = std::env::var("AVAX_RPC").expect("AVAX_RPC must be set");
+
+        let provider = ProviderBuilder::new()
+            .connect_http(avax_rpc.parse().unwrap())
+            .erased();
+
+        // Fetch the account.
+        let account = fetch_account(
+            provider.clone(),
+            &VaultFilter::default(),
+            vaults,
+            account_lens,
+            evc,
+            violator,
+        )
+        .await
+        .unwrap();
+
+        // First we check if any of the oracles this account makes use of are Pyth.
+        // If so we need to fetch their most recent quotes.
+        let mut pyth_ids = Vec::new();
+        for oracle in account.dependent_on().iter() {
+            let oracle_type = oracles.fetch_type(&provider, oracle.clone()).await;
+
+            let oracle_type = match oracle_type {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(
+                        "Issues with fetching oracle information, optimistically assuming this to not be a pyth oracle: {}",
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            oracle_type
+                .pyth_ids()
+                .iter()
+                .for_each(|new_id| pyth_ids.push(*new_id));
+        }
+
+        let pyth_data = fetch_pyth_data(&provider, pyth, pyth_ids).await.unwrap();
+
+        let liquidation = prepare_liquidation(
+            &provider.clone(),
+            &EulerSwapApi::new(
+                "https://swap.euler.finance".parse().unwrap(),
+                provider.clone().erased(),
+                43114,
+                liquidator_address,
+                liquidator_address,
+                swapper,
+                wrapped_native_asset,
+                "5", // Max slippage
+                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 43114),
+            ),
+            Some(pyth_data), // This liquidation does not use any pyth oracles.
+            liquidator_address,
+            account.clone(),
+        )
+        .await;
+
+        assert!(liquidation.unwrap().is_some());
     }
 
     #[tokio::test]
