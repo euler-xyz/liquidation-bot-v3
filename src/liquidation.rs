@@ -125,59 +125,36 @@ pub async fn prepare_liquidation(
         let vault = Vault::new(asset.vault.address, provider);
         let max_assets = vault.convertToAssets(max_yield).call().await?;
 
-        let new_potential_liquidation = match borrow.vault.asset == asset.vault.asset {
-            true => {
-                // Since these are in the same asset, the assets need to be more than the repay.
-                if max_assets < max_repay {
+        let new_potential_liquidation = PreparedLiquidation {
+            account: account.clone(),
+            borrow: borrow.clone(),
+            collateral: asset.clone(),
+            repay_amount: max_repay,
+            seized_collateral_amount: max_assets,
+            pyth: pyth.clone(),
+            liquidator: liquidator_address,
+
+            // These fields will be caldulated and set by the swap provider.
+            swap: None,
+            profit: U256::ZERO,
+            profit_in_asset: U256::ZERO,
+        };
+
+        // Find the swap data for it.
+        let new_potential_liquidation =
+            match swap_provider.find_swap(new_potential_liquidation).await {
+                Ok(Some(liq)) => liq,
+                Ok(None) => {
                     continue;
                 }
-
-                PreparedLiquidation {
-                    account: account.clone(),
-                    borrow: borrow.clone(),
-                    collateral: asset.clone(),
-                    repay_amount: max_repay,
-                    seized_collateral_amount: max_assets,
-                    pyth: pyth.clone(),
-                    // No swap neeeded.
-                    swap: None,
-                    liquidator: liquidator_address,
-                    profit: U256::ZERO,
-                    profit_in_asset: max_assets - max_repay,
+                Err(err) => {
+                    tracing::error!(
+                        "Issue while attempting to find a swap route, err: {:?}",
+                        err
+                    );
+                    continue;
                 }
-            }
-            false => {
-                let liquidation = PreparedLiquidation {
-                    account: account.clone(),
-                    borrow: borrow.clone(),
-                    collateral: asset.clone(),
-                    repay_amount: max_repay,
-                    seized_collateral_amount: max_assets,
-                    pyth: pyth.clone(),
-                    liquidator: liquidator_address,
-
-                    // These fields will be caldulated and set by the swap provider.
-                    swap: None,
-                    profit: U256::ZERO,
-                    profit_in_asset: U256::ZERO,
-                };
-
-                // Find the swap data for it.
-                match swap_provider.find_swap(liquidation).await {
-                    Ok(Some(liq)) => liq,
-                    Ok(None) => {
-                        continue;
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            "Issue while attempting to find a swap route, err: {:?}",
-                            err
-                        );
-                        continue;
-                    }
-                }
-            }
-        };
+            };
 
         // Check if the profit from this would be higher than what we have previously found.
         if let Some(prepared) = &prepared_liquidation

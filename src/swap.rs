@@ -279,6 +279,31 @@ impl<T: PriceAsset> EulerSwapApi<T> {
 
 impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
     async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>> {
+        // In this case a swap isn't actually needed. We only need to calculate what the profit of
+        // executing the liquidation would be.
+        // NOTE: Unsure if this functionality should live in this provider, as its not actually
+        // providing a swap quote, but its only here since this also has the PriceAsset trait.
+        // We might want to move this somewhere else.
+        if liq.borrow().vault.asset == liq.collateral().vault.asset {
+            // The amount we need to repay is more than the amount of assets.
+            if liq.seized_collateral_amount() < liq.repay_amount() {
+                return Ok(None);
+            }
+
+            // Calculate the profitis as well as in the native asset.
+            let profit = liq.seized_collateral_amount() - liq.repay_amount();
+            let profit_in_native = self
+                .pricing
+                .quote(
+                    liq.collateral().vault.asset,
+                    profit,
+                    self.wrapped_native_asset,
+                )
+                .await?;
+
+            return Ok(Some(liq.with_profit(profit_in_native, profit)));
+        }
+
         let start = SystemTime::now();
         let since_the_epoch = match start.duration_since(UNIX_EPOCH) {
             Ok(since) => since,
