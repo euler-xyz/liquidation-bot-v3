@@ -71,7 +71,31 @@ pub struct Account {
     pub borrows: Vec<VaultBorrowPosition>,
     pub collaterals: Vec<VaultCollateralPosition>,
 
-    status: Arc<RwLock<LiquidationReasoning>>,
+    status: Arc<RwLock<AccountStatus>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AccountStatus {
+    // The status of the account.
+    status: LiquidationReasoning,
+    // The date at which it was last updated.
+    time: DateTime<Utc>,
+}
+
+impl AccountStatus {
+    pub fn new() -> Self {
+        AccountStatus {
+            status: LiquidationReasoning::Unknown,
+            time: Utc::now(),
+        }
+    }
+
+    pub fn from(status: LiquidationReasoning) -> Self {
+        AccountStatus {
+            status,
+            time: Utc::now(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -96,7 +120,7 @@ impl Account {
             address,
             borrows,
             collaterals,
-            status: Arc::from(RwLock::from(LiquidationReasoning::Unknown)),
+            status: Arc::from(RwLock::from(AccountStatus::new())),
         }
     }
 
@@ -104,7 +128,7 @@ impl Account {
     // non-critical and only for observability.
     pub fn set_status(&self, status: LiquidationReasoning) {
         if let Ok(mut s) = self.status.try_write() {
-            *s = status;
+            *s = AccountStatus::from(status);
         }
     }
 }
