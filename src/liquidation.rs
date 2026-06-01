@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 
 use crate::{
     account::ILiquidation,
+    oracles::ORACLE_PRICING_UNIT,
     pyth::PythFeedInput,
     swap::{SwapPayload, SwapQuoteProvider},
     types::{Account, LiquidationReasoning, VaultBorrowPosition, VaultCollateralPosition},
@@ -271,7 +272,7 @@ impl PreparedLiquidation {
 
 pub async fn get_shares_to_underlying(provider: &DynProvider, vault: Address) -> Result<U256> {
     Vault::new(vault, provider)
-        .convertToAssets(U256::from(100_000))
+        .convertToAssets(U256::from(ORACLE_PRICING_UNIT))
         .call()
         .await
         .map_err(|e| {

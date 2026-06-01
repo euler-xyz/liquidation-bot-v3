@@ -23,6 +23,8 @@ use crate::{
     types::OracleIdentifier,
 };
 
+pub const ORACLE_PRICING_UNIT: i64 = 1000000000000000000;
+
 #[derive(Debug, Clone)]
 pub struct OraclesCache {
     lens: Address,
@@ -116,7 +118,7 @@ impl OraclesCache {
             }
         };
 
-        Ok((amount * price).div_ceil(U256::from(100_000)))
+        Ok((amount * price).div_ceil(U256::from(ORACLE_PRICING_UNIT)))
     }
 
     pub async fn fetch_latest_price(
@@ -179,7 +181,11 @@ impl OraclesCache {
     async fn fetch_price(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<U256> {
         // Build the call we will eventually perform.
         let adapter = IPriceOracle::new(id.adapter, provider);
-        let adapter_call = adapter.getQuote(U256::from(100_000), id.base_asset, id.quote_asset);
+        let adapter_call = adapter.getQuote(
+            U256::from(ORACLE_PRICING_UNIT),
+            id.base_asset,
+            id.quote_asset,
+        );
 
         // Fetch the oracle either from the chain or from the cache, we need this to determine how
         // to fetch the price.

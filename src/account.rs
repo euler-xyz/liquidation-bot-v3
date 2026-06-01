@@ -12,7 +12,7 @@ use tokio::{sync::mpsc::Sender, time};
 use tracing::{debug, error, info};
 
 use crate::{
-    oracles::OraclesCache,
+    oracles::{ORACLE_PRICING_UNIT, OraclesCache},
     types::{
         Account, LiquidationReasoning, OracleIdentifier, Vault, VaultBorrowPosition,
         VaultCollateralPosition,
@@ -211,7 +211,7 @@ impl Account {
                 let amount = match borrow.vault.ltvs.get(&a.vault.address) {
                     Some(ltv) => {
                         // Convert the amount into shares.
-                        let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(100_000);
+                        let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(ORACLE_PRICING_UNIT);
 
                         // Apply the liquidation LTV onto the underlying.
                         amount * ltv.current_liquidation_ltv() / U256::from(10_000)

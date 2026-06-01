@@ -75,7 +75,10 @@ async fn fetch_pyth(ids: Vec<FixedBytes<32>>) -> Result<PythResponse> {
         "https://hermes.pyth.network/v2/updates/price/latest?ids[]={}",
         ids.iter().format("&ids[]=")
     );
-    Ok(reqwest::get(request_url).await?.json().await?)
+
+    let body = reqwest::get(request_url.clone()).await?.text().await?;
+    // dbg!(request_url, &body);
+    Ok(serde_json::from_str(&body)?)
 }
 
 pub async fn fetch_pyth_data(
