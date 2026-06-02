@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, Bytes, U256};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -52,7 +52,7 @@ pub enum LiquidationReasoning {
     Error(LiquidationReasoningError),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Hash, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LiquidationReasoningError {
     OracleError {
@@ -60,9 +60,30 @@ pub enum LiquidationReasoningError {
         // oracle: Address,
         message: String,
     },
+    // If the liquidation reverts during a simulation we store the revert data.
+    LiquidationRevert {
+        data: Bytes,
+    },
     Other {
         message: String,
     },
+}
+
+impl From<alloy::transports::RpcError<alloy::transports::TransportErrorKind>>
+    for LiquidationReasoningError
+{
+    fn from(err: alloy::transports::RpcError<alloy::transports::TransportErrorKind>) -> Self {
+        match err {
+            alloy::transports::RpcError::ErrorResp(error_payload) => {
+                LiquidationReasoningError::LiquidationRevert {
+                    data: error_payload.as_revert_data().unwrap_or_default(),
+                }
+            }
+            _ => LiquidationReasoningError::Other {
+                message: "RPC Error".to_string(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

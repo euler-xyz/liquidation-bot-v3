@@ -1,15 +1,22 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use alloy::{
     primitives::{Address, Bytes, U256},
     providers::{DynProvider, Provider},
+    serde::quantity::hashmap,
 };
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::trace;
 
-use crate::{liquidation::PreparedLiquidation, prices::PriceAsset};
+use crate::{
+    liquidation::PreparedLiquidation, prices::PriceAsset, types::LiquidationReasoningError,
+};
 
 // TODO: Once we know what fields we need (and are nice to have for debugging) we should clean
 // these struct and remove unused fields.
@@ -137,7 +144,10 @@ pub struct MulticallItem {
 
 pub trait SwapQuoteProvider {
     #![allow(async_fn_in_trait)]
-    async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>>;
+    async fn find_swap(
+        &self,
+        liq: PreparedLiquidation,
+    ) -> Result<Option<PreparedLiquidation>, LiquidationReasoningError>;
 }
 
 pub struct EulerSwapApi<T: PriceAsset> {
@@ -278,7 +288,10 @@ impl<T: PriceAsset> EulerSwapApi<T> {
 }
 
 impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
-    async fn find_swap(&self, liq: PreparedLiquidation) -> Result<Option<PreparedLiquidation>> {
+    async fn find_swap(
+        &self,
+        liq: PreparedLiquidation,
+    ) -> Result<Option<PreparedLiquidation>, LiquidationReasoningError> {
         // In this case a swap isn't actually needed. We only need to calculate what the profit of
         // executing the liquidation would be.
         // NOTE: Unsure if this functionality should live in this provider, as its not actually
@@ -299,7 +312,13 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                     profit,
                     self.wrapped_native_asset,
                 )
-                .await?;
+                .await
+                .map_err(|e| {
+                    tracing::error!("Could not fetch quote, err: {:?}", e);
+                    LiquidationReasoningError::Other {
+                        message: "Could not calculate profit through the pricing API".to_string(),
+                    }
+                })?;
 
             return Ok(Some(liq.with_profit(profit_in_native, profit)));
         }
@@ -308,9 +327,14 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         let since_the_epoch = match start.duration_since(UNIX_EPOCH) {
             Ok(since) => since,
             Err(err) => {
-                return Err(anyhow!(
-                    "Issue while getting the current time, it appears to be moving backwards. err: {err}"
-                ));
+                tracing::error!(
+                    "CRITICAL ERROR! Time has moved backwards somehow. This should never happen, err: {:?}",
+                    err
+                );
+
+                return Err(LiquidationReasoningError::Other {
+                    message: "Critical error!".to_string(),
+                });
             }
         };
 
@@ -347,10 +371,19 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         let mut quotes: Vec<SwapQuote> = self
             .get_swap_quotes(params)
             .await
-            .context("When fetching swap quotes")?;
+            .context("When fetching swap quotes")
+            .map_err(|e| {
+                tracing::error!("Issue while fetching swap quotes, err: {:?}", e);
+                LiquidationReasoningError::Other {
+                    message: "Issue fetching swap quotes".to_string(),
+                }
+            })?;
 
         // Sort it by most profitable to least profitable.
         quotes.sort_by_key(|q| std::cmp::Reverse(q.amount_out));
+
+        // We track failed attempts and count how often a specific error occured.
+        let mut attempts: HashMap<LiquidationReasoningError, usize> = HashMap::new();
 
         for quote in quotes {
             // Since we are sorted by profibility if this is not suffecient none of the others will
@@ -379,7 +412,14 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                             profit,
                             self.wrapped_native_asset,
                         )
-                        .await?;
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Could not fetch quote, err: {:?}", e);
+                            LiquidationReasoningError::Other {
+                                message: "Could not calculate profit through the pricing API"
+                                    .to_string(),
+                            }
+                        })?;
 
                     // NOTE: We could already determine here if this swap is profitable, as we just
                     // did a simulation so we could check gas usage, and we have the potential
@@ -392,13 +432,33 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                         "Error while simulating quote execution and liquidation, err: {:?}",
                         err
                     );
+
+                    let attempt_error = match err {
+                        alloy::transports::RpcError::ErrorResp(error_payload) => {
+                            // Extract the revert data from the request.
+                            LiquidationReasoningError::LiquidationRevert {
+                                data: error_payload.as_revert_data().unwrap_or_default(),
+                            }
+                        }
+                        _ => LiquidationReasoningError::Other {
+                            message: "RPC Error".to_string(),
+                        },
+                    };
+
+                    // Store this attempt if its new, otherwise increase the counter on how often we
+                    // have seen this error.
+                    *attempts.entry(attempt_error).or_insert(0) += 1;
+
                     // The liquidation call with this swap failed, continueing onto the next.
                     continue;
                 }
             }
         }
 
-        // We could not find a way to liqudiate this asset profitably.
-        Ok(None)
+        // Check if we failed because there were no paths, or if we failed due to an error.
+        match attempts.into_iter().max_by_key(|(_, n)| *n) {
+            Some((err, _)) => Err(err),
+            None => Ok(None),
+        }
     }
 }

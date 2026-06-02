@@ -486,11 +486,7 @@ pub async fn prepare_liquidations(
                 );
             }
             Err(e) => {
-                account.set_status(LiquidationReasoning::Error(
-                    LiquidationReasoningError::Other {
-                        message: "Could not prepare the liquidation".to_string(),
-                    },
-                ));
+                account.set_status(LiquidationReasoning::Error(e.clone()));
 
                 tracing::error!(
                     account =? account.address,
@@ -728,6 +724,7 @@ mod test {
         pyth::fetch_pyth_data,
         swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuoteProvider},
         transactions::execute_liquidation_queue,
+        types::LiquidationReasoningError,
         vaults::Vaults,
     };
     use alloy::{
@@ -745,7 +742,7 @@ mod test {
         async fn find_swap(
             &self,
             liq: PreparedLiquidation,
-        ) -> anyhow::Result<Option<PreparedLiquidation>> {
+        ) -> Result<Option<PreparedLiquidation>, LiquidationReasoningError> {
             let liq = liq.with_swap_data(
                 Some(SwapPayload {
                     // This data is form the actual on-chain liquidation.
