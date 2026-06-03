@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use alloy::{
     network::TransactionBuilder,
     primitives::{Address, Bytes, U256},
@@ -13,7 +15,10 @@ use crate::{
     oracles::ORACLE_PRICING_UNIT,
     pyth::PythFeedInput,
     swap::{SwapPayload, SwapQuoteProvider},
-    types::{Account, LiquidationReasoning, VaultBorrowPosition, VaultCollateralPosition},
+    types::{
+        Account, LiquidationReasoning, LiquidationReasoningError, VaultBorrowPosition,
+        VaultCollateralPosition,
+    },
 };
 
 sol! {
@@ -77,7 +82,7 @@ pub async fn prepare_liquidation(
     pyth: Option<PythFeedInput>,
     liquidator_address: Address,
     account: Account,
-) -> Result<Option<PreparedLiquidation>> {
+) -> Result<Option<PreparedLiquidation>, LiquidationReasoningError> {
     let borrow = match account.borrows.first() {
         Some(borrow) => borrow,
         // We can't liquidate an account that does not have any debt.
@@ -87,13 +92,16 @@ pub async fn prepare_liquidation(
     let vault_address = borrow.vault.address;
     let vault = ILiquidation::new(vault_address, provider);
 
+    // We track failed attempts and count how often a specific error occured.
+    let mut attempts: HashMap<LiquidationReasoningError, usize> = HashMap::new();
+
     let mut prepared_liquidation: Option<PreparedLiquidation> = None;
     for asset in account.collaterals.iter() {
         // Calculate the result of the liquidation.
         let (max_repay, max_yield) = match pyth.clone() {
             Some(pyth) => {
                 let liquidator = Liquidator::new(liquidator_address, provider);
-                let liq_result = liquidator
+                let liq_result = match liquidator
                     .simulatePythUpdateAndCheckLiquidation(
                         pyth.data,
                         pyth.cost,
@@ -105,15 +113,47 @@ pub async fn prepare_liquidation(
                     )
                     .value(pyth.cost)
                     .call()
-                    .await?;
+                    .await
+                {
+                    Ok(liq_result) => liq_result,
+                    Err(err) => {
+                        tracing::error!("Error while checking (pyth) liquidation, err: {:?}", err);
+
+                        let attempt_error = LiquidationReasoningError::LiquidationRevert {
+                            data: err.as_revert_data().unwrap_or_default(),
+                        };
+
+                        // Store this attempt if its new, otherwise increase the counter on how often we
+                        // have seen this error.
+                        *attempts.entry(attempt_error).or_insert(0) += 1;
+
+                        continue;
+                    }
+                };
 
                 (liq_result.maxRepay, liq_result.seizedCollateral)
             }
             None => {
-                let liq_result = vault
+                let liq_result = match vault
                     .checkLiquidation(liquidator_address, account.address, asset.vault.address)
                     .call()
-                    .await?;
+                    .await
+                {
+                    Ok(liq_result) => liq_result,
+                    Err(err) => {
+                        tracing::error!("Error while checkingliquidation, err: {:?}", err);
+
+                        let attempt_error = LiquidationReasoningError::LiquidationRevert {
+                            data: err.as_revert_data().unwrap_or_default(),
+                        };
+
+                        // Store this attempt if its new, otherwise increase the counter on how often we
+                        // have seen this error.
+                        *attempts.entry(attempt_error).or_insert(0) += 1;
+
+                        continue;
+                    }
+                };
 
                 (liq_result.maxRepay, liq_result.maxYield)
             }
@@ -124,7 +164,23 @@ pub async fn prepare_liquidation(
         }
 
         let vault = Vault::new(asset.vault.address, provider);
-        let max_assets = vault.convertToAssets(max_yield).call().await?;
+
+        let max_assets = match vault.convertToAssets(max_yield).call().await {
+            Ok(max_assets) => max_assets,
+            Err(err) => {
+                tracing::error!("Error while converting to assets, err: {:?}", err);
+
+                let attempt_error = LiquidationReasoningError::LiquidationRevert {
+                    data: err.as_revert_data().unwrap_or_default(),
+                };
+
+                // Store this attempt if its new, otherwise increase the counter on how often we
+                // have seen this error.
+                *attempts.entry(attempt_error).or_insert(0) += 1;
+
+                continue;
+            }
+        };
 
         let new_potential_liquidation = PreparedLiquidation {
             account: account.clone(),
@@ -153,6 +209,11 @@ pub async fn prepare_liquidation(
                         "Issue while attempting to find a swap route, err: {:?}",
                         err
                     );
+
+                    // Store this attempt if its new, otherwise increase the counter on how often we
+                    // have seen this error.
+                    *attempts.entry(err).or_insert(0) += 1;
+
                     continue;
                 }
             };
@@ -168,7 +229,15 @@ pub async fn prepare_liquidation(
         prepared_liquidation = Some(new_potential_liquidation);
     }
 
-    Ok(prepared_liquidation)
+    // If we found a liquidation option then we return it, otherwise we check if we ran into any
+    // error and which was the most common error and return that.
+    match prepared_liquidation {
+        Some(prepared_liquidation) => Ok(Some(prepared_liquidation)),
+        None => match attempts.into_iter().max_by_key(|(_, n)| *n) {
+            Some((err, _)) => Err(err),
+            None => Ok(None),
+        },
+    }
 }
 
 impl PreparedLiquidation {
