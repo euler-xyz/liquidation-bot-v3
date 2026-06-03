@@ -209,6 +209,11 @@ pub async fn prepare_liquidation(
                         "Issue while attempting to find a swap route, err: {:?}",
                         err
                     );
+
+                    // Store this attempt if its new, otherwise increase the counter on how often we
+                    // have seen this error.
+                    *attempts.entry(err).or_insert(0) += 1;
+
                     continue;
                 }
             };
