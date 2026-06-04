@@ -20,4 +20,6 @@ enable_observability_api = true
 mode = "Blacklist"
 items = [
     "0x7a455f66fd2d2d5c69ae403a971ed513c852f9d7", # Re7 Labs Cluster - EVK Vault eBTCB-4
+    "0x3ac88afbc38bb41443457eeb027b60e85b815538", # Re7 Labs Cluster - EVK Vault eWBNB-5
+    "0x266d3f3219680624de4d66c716444512a2b9a72f", # Re7 Labs Cluster - EVK Vault elisUSD-2
 ]
