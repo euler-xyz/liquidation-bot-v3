@@ -16,3 +16,10 @@ oracle_polling_interval_seconds = 30
 full_resync_and_check_interval_seconds = 3600 
 enable_observability_api = true
 
+[vault_filter]
+mode = "Blacklist"
+items = [
+    "0xdebdab749330bb976fd10dc52f9a452aaf029028", # MEV Capital Sonic Cluster - xUSD
+    "0x196f3c7443e940911ee2bb88e019fd71400349d9", # MEV Capital Sonic Cluster - USDC
+    "0xb38d431e932fea77d1df0ae0dfe4400c97e597b8", # MEV Capital Sonic Cluster - scUSD
+]

@@ -18,5 +18,9 @@ enable_observability_api = true
 
 [vault_filter]
 mode = "Blacklist"
-items = ["0xdB6856e8478DB159c383a0c4b274E259AF83cB15"]
+items = [
+    "0xae120fab8475eeb08d6e6bfc9143d099d3a4ae73", # EVK Vault eUSDC-46 
+    "0x21538A78C26886Be9f09Adc1286B54b4e9bBa255", # EVK Vault eUSDC-81
+    "0xc063c3b3625df5f362f60f35b0bcd98e0fa650fb", # Apostro Resolv - EVK Vault eUSDC-3 
+]
 

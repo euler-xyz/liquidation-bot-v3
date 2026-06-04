@@ -16,3 +16,9 @@ oracle_polling_interval_seconds = 30
 full_resync_and_check_interval_seconds = 3600 
 enable_observability_api = true
 
+[vault_filter]
+mode = "Blacklist"
+items = [
+    "0x2137568666f12fc5a026f5430ae7194f1c1362ab", # Re7 Labs Cluster - EVK Vault eAUSD-2
+    "0xaba9d2d4b6b93c3dc8976d8eb0690cca56431fe4", # Re7 Labs Cluster - EVK Vault eUSDt-2
+]

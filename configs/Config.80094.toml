@@ -16,3 +16,9 @@ oracle_polling_interval_seconds = 30
 full_resync_and_check_interval_seconds = 3600 
 enable_observability_api = true
 
+[vault_filter]
+mode = "Blacklist"
+items = [
+    "0x44812cce64fddc7529dd6d41c9b3e1d0de006d92", # EVK Vault eHONEY-9
+]
+
