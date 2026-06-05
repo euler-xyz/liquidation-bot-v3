@@ -15,3 +15,10 @@ profit_receiver = "0x8cbB534874bab83e44a7325973D2F04493359dF8"
 oracle_polling_interval_seconds = 30
 full_resync_and_check_interval_seconds = 3600 
 enable_observability_api = true
+
+[vault_filter]
+mode = "Blacklist"
+items = [
+    "0x8adb906421f65c27155f44f1829ca1e5b024c3f6", # Re7 Labs xUSD - xUSD
+    "0xf675fbe777e992f5d5d84adf41161dc0f20104a6", # Re7 Labs xUSD - USDT0
+]

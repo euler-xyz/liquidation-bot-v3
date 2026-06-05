@@ -20,5 +20,6 @@ enable_observability_api = true
 mode = "Blacklist"
 items = [
     "0x44812cce64fddc7529dd6d41c9b3e1d0de006d92", # EVK Vault eHONEY-9
+    "0xcd70599d3d8d1a6e3e4dd60d494dbf10e9b0f778", # EVK Vault eHONEY-8
 ]
 
