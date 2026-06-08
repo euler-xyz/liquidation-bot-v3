@@ -6,13 +6,14 @@ use alloy::{
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info, warn};
 
-use crate::liquidation::PreparedLiquidation;
+use crate::{api::BotHealth, liquidation::PreparedLiquidation};
 
 /// Watches the liquidation channel and executes liquidations.
 pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
     provider: T,
     mut queue: Receiver<PreparedLiquidation>,
     profit_receiver: Address,
+    state: Option<tokio::sync::watch::Sender<BotHealth>>,
 ) {
     loop {
         if let Some(liquidation) = queue.recv().await {
@@ -87,6 +88,23 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             let tx = match provider.send_transaction(tx).await {
                 Ok(tx) => tx.get_receipt().await,
                 Err(err) => {
+                    // We check to see if this error is because of having insuffecient funds to
+                    // execute the transaction. If so then this bot is now in an unhealthy state.
+                    match err {
+                        alloy::transports::RpcError::ErrorResp(ref error_payload) => {
+                            // -32003 is "Transaction Rejected"
+                            // We then check to make sure it is specifically insuffecient funds.
+                            if error_payload.code == -32003
+                                && error_payload.message.contains("insufficient")
+                            {
+                                if let Some(ref state) = state {
+                                    state.send(BotHealth::Error("Insuffecient funds".to_string()));
+                                }
+                            }
+                        }
+                        _ => {}
+                    };
+
                     error!(
                         account =? liquidation.account(),
                         "Issue sending transaction, err: {:?}",
@@ -95,6 +113,10 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                     continue;
                 }
             };
+
+            if let Some(ref state) = state {
+                state.send(BotHealth::Healthy);
+            }
 
             match tx {
                 Ok(receipt) => {
