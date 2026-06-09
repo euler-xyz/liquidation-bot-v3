@@ -22,4 +22,9 @@ items = [
     "0xdebdab749330bb976fd10dc52f9a452aaf029028", # MEV Capital Sonic Cluster - xUSD
     "0x196f3c7443e940911ee2bb88e019fd71400349d9", # MEV Capital Sonic Cluster - USDC
     "0xb38d431e932fea77d1df0ae0dfe4400c97e597b8", # MEV Capital Sonic Cluster - scUSD
+    "0xa5cd24d9792f4f131f5976af935a505d19c8db2b", # MEV Capital Sonic Cluster - wETH
+    "0x0806af1762bdd85b167825ab1a64e31cf9497038", # MEV Capital Sonic Cluster - scETH
+    "0xeeaab5c863f4b1c5356af138f384adc25cb70da6", # MEV Capital Sonic Cluster - stS
+
+    "0x90a804d316a06e00755444d56b9ef52e5c4f4d73", # MEV Capital Beets Cluster - wS
 ]
