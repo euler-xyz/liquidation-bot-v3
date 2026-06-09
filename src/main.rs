@@ -195,12 +195,19 @@ async fn main() {
         ),
     };
 
-    let profit_receiver = config.profit_receiver;
-    tokio::spawn(async move {
-        execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
-    });
-
     let (tx, rx) = tokio::sync::watch::channel(BotHealth::Syncing);
+
+    let profit_receiver = config.profit_receiver;
+    let liquidation_health_tx = tx.clone();
+    tokio::spawn(async move {
+        execute_liquidation_queue(
+            liquidation_provider,
+            liquidation_receiver,
+            profit_receiver,
+            Some(liquidation_health_tx),
+        )
+        .await
+    });
 
     if config.enable_observability_api {
         // Start the observability api.
@@ -820,7 +827,7 @@ mod test {
                 .connect_http(network.endpoint_url());
 
             tokio::spawn(async move {
-                execute_liquidation_queue(provider, liquidation_receiver, recipient).await;
+                execute_liquidation_queue(provider, liquidation_receiver, recipient, None).await;
             });
         }
 
@@ -1002,7 +1009,7 @@ mod test {
                 .connect_http(network.endpoint_url());
 
             tokio::spawn(async move {
-                execute_liquidation_queue(provider, liquidation_receiver, recipient).await;
+                execute_liquidation_queue(provider, liquidation_receiver, recipient, None).await;
             });
         }
 
