@@ -114,8 +114,9 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 }
             };
 
+            // If we are processing transactions then we should be healthy.
             if let Some(ref state) = state {
-                state.send(BotHealth::Healthy);
+                let _ = state.send(BotHealth::Healthy);
             }
 
             match tx {
