@@ -1077,6 +1077,70 @@ mod test {
         assert!(account.borrows.is_empty());
     }
 
+    #[tokio::test]
+    async fn liquidation_monad() {
+        // This account is healthy at this block.
+        let block = 80320464;
+        let violator = address!("0xe9ebd964090e1ccc5a1cc05164c26533d67f7c87");
+
+        // Network (mainnet) specific configuration.
+        let wrapped_native_asset = address!("0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A");
+        let vaults = &mut Vaults::new(address!("0x13958d27dbCEce91aafA13C4fD4772efb1C23e15"));
+        let liquidator_address = address!("0x5D253264e1FA8804888e05B5CFC031876be108b2");
+        let swapper = address!("0xB6D7194fD09F27890279caB08d565A6424fb525D");
+
+        let monad_rpc = std::env::var("MONAD_RPC").expect("MONAD_RPC must be set");
+
+        // Fork the network at the block where this liquidation was present.
+        let network = Anvil::new()
+            .fork(monad_rpc)
+            .fork_block_number(block)
+            .arg("--disable-min-priority-fee")
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        // Fetch the account.
+        let account = fetch_account(
+            provider.clone(),
+            &VaultFilter::default(),
+            vaults,
+            address!("0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee"),
+            address!("0x7a9324E8f270413fa2E458f5831226d99C7477CD"),
+            violator,
+        )
+        .await
+        .unwrap();
+
+        // Sanity check, as we later also check this and then it will be empty.
+        assert!(!account.borrows.is_empty());
+
+        let liquidation = prepare_liquidation(
+            &provider.clone(),
+            &EulerSwapApi::new(
+                "https://swap.euler.finance".parse().unwrap(),
+                provider.clone().erased(),
+                143,
+                liquidator_address,
+                liquidator_address,
+                swapper,
+                wrapped_native_asset,
+                "5", // Max slippage
+                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
+            ),
+            None, // This liquidation does not use any pyth oracles.
+            liquidator_address,
+            account.clone(),
+        )
+        .await;
+
+        // Check that we found a way to successfully liquidate the position.
+        assert!(liquidation.is_ok_and(|l| l.is_some()));
+    }
+
     /// Waits up to 30 seconds for a new block to be mined, polling once per second.
     /// Panics if no new block is mined within the timeout. Intended for use in tests.
     pub async fn wait_for_next_block<P: Provider>(provider: &P, current_block: Option<u64>) {

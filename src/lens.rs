@@ -111,11 +111,11 @@ pub async fn fetch_account(
     provider: DynProvider,
     filter: &VaultFilter,
     vaults: &mut Vaults,
-    lens: Address,
+    account_lens: Address,
     evc: Address,
     account: Address,
 ) -> Result<Account, FetchAccountError> {
-    let lens = AccountLens::new(lens, &provider);
+    let lens = AccountLens::new(account_lens, &provider);
 
     //
     let start = Instant::now();
