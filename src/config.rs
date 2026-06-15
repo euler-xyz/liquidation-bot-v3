@@ -207,6 +207,7 @@ mod test {
         validate_configuration_file("https://rpc4.monad.xyz", 143).await;
         validate_configuration_file("https://sonic.drpc.org", 146).await;
         validate_configuration_file("https://rpc.tac.build", 239).await;
+        validate_configuration_file("https://rpc.hypurrscan.io", 999).await;
         validate_configuration_file("https://rpc.ankr.com/swell", 1923).await;
         validate_configuration_file("https://base.api.pocket.network", 8453).await;
         validate_configuration_file("https://plasma.drpc.org", 9745).await;
