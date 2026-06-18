@@ -32,10 +32,20 @@ impl AccountsTracker {
     }
 
     pub fn add(&self, account: Account) {
+        // Check if we are already tracking this account.
+        if let Some(old_account) = self.accounts.get(&account.address) {
+            // Remove it as an oracle_dependent for its oracles.
+            old_account.dependent_on().iter().for_each(|o| {
+                let mut od = self.oracle_dependents.entry(o.clone()).or_default();
+                od.retain(|a| *a != account.address);
+            });
+            drop(old_account);
+        }
+
         // Skip accounts that have no borrows, these are not of interest to us.
-        // TODO: Check if we are already tracking this account and this was intended as an update,
-        // if so we remove the account.
+        // If it existed before we remove it now.
         if account.borrows.is_empty() {
+            self.accounts.remove(&account.address);
             return;
         }
 
@@ -111,9 +121,54 @@ mod test {
         accounts::AccountsTracker,
         config::VaultFilter,
         lens::fetch_account,
-        types::{OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition},
+        types::{Account, OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition},
         vaults::Vaults,
     };
+
+    #[tokio::test]
+    // When updating an account to have no borrow we should be removing the account.
+    async fn update_account_to_have_no_borrow() {
+        let accounts = AccountsTracker::new();
+
+        let account_address = Address::random();
+        let account = Account::new(
+            account_address,
+            vec![VaultBorrowPosition::generate_random()],
+            vec![VaultCollateralPosition::generate_random()],
+        );
+
+        accounts.add(account.clone());
+
+        // Should now have 1 account.
+        assert_eq!(accounts.all_accounts().len(), 1);
+
+        // Check that we get the account when we check for impacted accounts.
+        assert_eq!(
+            accounts
+                .get_impacted_accounts(account.dependent_on().first().unwrap())
+                .len(),
+            1
+        );
+
+        // Now we update the account to no longer have any outstanding borrows.
+        let original_account = account;
+        let account = Account::new(
+            account_address,
+            vec![],
+            original_account.collaterals.clone(),
+        );
+
+        accounts.add(account);
+
+        // Should now have no accounts.
+        assert!(accounts.all_accounts().is_empty());
+
+        // Check that it is no longer being reported as being impacted by price changes.
+        original_account
+            .dependent_on()
+            .iter()
+            .for_each(|dp| assert!(accounts.get_impacted_accounts(dp).is_empty()));
+    }
 
     #[tokio::test]
     async fn impacted_finds_accounts() {
