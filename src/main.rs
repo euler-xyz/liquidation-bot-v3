@@ -865,35 +865,34 @@ mod test {
     }
 
     #[tokio::test]
-    async fn avax_debug() {
-        // // Configure tracing.
-        // tracing_subscriber::fmt()
-        //     .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
-        //     .init();
+    async fn bera_debug() {
+        // Configure tracing.
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
+            .init();
 
         // let block = 86125670;
-        let violator = address!("0x31d961ec888dfdc07b218e1066500afd2f747278");
+        let violator = address!("0x7bfee91193d9df2ac0bfe90191d40f23c773c061");
         let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
 
         // Avax configuration.
-        let evc = address!("0xddcbe30A761Edd2e19bba930A977475265F36Fa1");
-        let vault_lens = address!("0x7a2A57a0ed6807c7dbF846cc74aa04eE9DFa7F57");
-        let account_lens = address!("0x08bb803D19e5E2F006C87FEe77c232Dc481cB735");
-        let oracle_lens = address!("0xC5FFCe5f0e6646D93F7E79bD71d268dFC1B7EfD7");
-        let pyth = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
-        let swapper = address!("0x6E1C286e888Ab5911ca37aCeD81365d57eC29a06");
-        let wrapped_native_asset = address!("0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7");
+        let evc = address!("0x45334608ECE7B2775136bC847EB92B5D332806A9");
+        let vault_lens = address!("0x9e43CC80664Cc5Af5D0a37d821305377ae6911Bb");
+        let account_lens = address!("0xfC09040C5E26aec5E55a93F6856159A0C28ffDB9");
+        let oracle_lens = address!("0x8555B31Ce5ebCD6F8a031ff599728eeb276634d3");
+        let pyth = address!("0x2880aB155794e7179c9eE2e38200202908C17B43");
+        let swapper = address!("0x83Ee58fE951bb0133F4E30D61863988378CD665E");
+        let wrapped_native_asset = address!("0x6969696969696969696969696969696969696969");
 
-        // Network (mainnet) specific configuration.
-        // let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+        // Network specific configuration.
         let vaults = &mut Vaults::new(vault_lens);
         let oracles = OraclesCache::new(oracle_lens, Some(pyth));
-        let liquidator_address = address!("0xBd2e8b960A7dF1Ba2107b7F5f43b1A32fD27017F");
+        let liquidator_address = address!("0xbB4fB2b4410e9b024d2df17329d288F4de46c8bA");
 
-        let avax_rpc = std::env::var("AVAX_RPC").expect("AVAX_RPC must be set");
+        let bera_rpc = std::env::var("BERA_RPC").expect("BERA_RPC must be set");
 
         let provider = ProviderBuilder::new()
-            .connect_http(avax_rpc.parse().unwrap())
+            .connect_http(bera_rpc.parse().unwrap())
             .erased();
 
         // Fetch the account.
@@ -931,28 +930,35 @@ mod test {
                 .for_each(|new_id| pyth_ids.push(*new_id));
         }
 
-        let pyth_data = fetch_pyth_data(&provider, pyth, pyth_ids).await.unwrap();
+        // let pyth_data = fetch_pyth_data(&provider, pyth, pyth_ids).await.unwrap();
 
         let liquidation = prepare_liquidation(
             &provider.clone(),
             &EulerSwapApi::new(
                 "https://swap.euler.finance".parse().unwrap(),
                 provider.clone().erased(),
-                43114,
+                80094,
                 liquidator_address,
                 liquidator_address,
                 swapper,
                 wrapped_native_asset,
                 "5", // Max slippage
-                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 43114),
+                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 80094),
             ),
-            Some(pyth_data), // This liquidation does not use any pyth oracles.
+            None,
             liquidator_address,
             account.clone(),
         )
         .await;
 
-        assert!(liquidation.unwrap().is_some());
+        dbg!(
+            liquidation
+                .unwrap()
+                .unwrap()
+                .into_transaction(address!("0x7bfee91193d9df2ac0bfe90191d40f23c773c061"))
+        );
+
+        // assert!(liquidation.unwrap().is_some());
     }
 
     #[tokio::test]
