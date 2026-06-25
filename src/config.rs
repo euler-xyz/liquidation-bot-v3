@@ -11,6 +11,8 @@ use figment::{
 use reqwest::Url;
 use serde::Deserialize;
 
+use crate::{config, liquidation::Liquidator};
+
 #[derive(Deserialize, Clone, Default)]
 pub enum VaultFilterMode {
     #[default]
@@ -144,6 +146,19 @@ impl Config {
         check_address(&provider, self.account_lens_address, "account lens").await?;
         check_address(&provider, self.vault_lens_address, "vault lens").await?;
         check_address(&provider, self.liquidator_address, "liquidator").await?;
+
+        // // Ensure the liquidator is configured correctly.
+        // let liquidator = Liquidator::new(self.liquidator_address, provider);
+        // let liquidator_swapper = liquidator.swapperAddress().call().await?;
+        //
+        // if liquidator_swapper != self.swapper_address {
+        //     anyhow::bail!(
+        //         "On chain {} the swapper address configured for the liquidator is different than the one that is configured for the bot, this is a misconfiguration. contract={}, bot={}",
+        //         self.chain_id,
+        //         liquidator_swapper,
+        //         self.swapper_address
+        //     );
+        // }
 
         Ok(())
     }

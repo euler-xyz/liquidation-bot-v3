@@ -24,6 +24,12 @@ use crate::{
 sol! {
     #[sol(rpc)]
     contract Liquidator {
+        address public immutable owner;
+        address public immutable swapperAddress;
+        address public immutable swapVerifierAddress;
+        address public immutable evcAddress;
+        address public immutable PYTH;
+
         function simulatePythUpdateAndCheckLiquidation(bytes[] calldata pythUpdateData, uint256 pythUpdateFee, address vaultAddress, address liquidatorAddress, address borrowerAddress, address collateralAddress) external payable returns (uint256 maxRepay, uint256 seizedCollateral);
         function liquidateSingleCollateral(LiquidationParams calldata params, bytes[] calldata swapperData) external returns (bool success);
         function liquidateSingleCollateralWithPythOracle(LiquidationParams calldata params, bytes[] calldata swapperData, bytes[] calldata pythUpdateData) external payable returns (bool success);

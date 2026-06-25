@@ -4,7 +4,7 @@ subgraph_url_path = "subgraphs/euler-simple-bob/latest/gn"
 evc_address = "0x59f0FeEc4fA474Ad4ffC357cC8d8595B68abE47d"
 # This chain does not have a Pyth deployment.
 # pyth_address = "0x2880aB155794e7179c9eE2e38200202908C17B43"
-swapper_address = "0x697Ca30D765c1603890D88AAffBa3BeCCe72059d"
+swapper_address = "0xB5949BcaF4BC1bC0ef2D132A4A2Ec5cf4D5934CD"
 liquidator_address = "0xBd2e8b960A7dF1Ba2107b7F5f43b1A32fD27017F"
 wrapped_native_asset_address = "0x4200000000000000000000000000000000000006"
 oracle_lens_address = "0xd9697A7Cab800cAaE7F1E9B4db64385D971a5F13"
