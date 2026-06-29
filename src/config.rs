@@ -147,18 +147,18 @@ impl Config {
         check_address(&provider, self.vault_lens_address, "vault lens").await?;
         check_address(&provider, self.liquidator_address, "liquidator").await?;
 
-        // // Ensure the liquidator is configured correctly.
-        // let liquidator = Liquidator::new(self.liquidator_address, provider);
-        // let liquidator_swapper = liquidator.swapperAddress().call().await?;
-        //
-        // if liquidator_swapper != self.swapper_address {
-        //     anyhow::bail!(
-        //         "On chain {} the swapper address configured for the liquidator is different than the one that is configured for the bot, this is a misconfiguration. contract={}, bot={}",
-        //         self.chain_id,
-        //         liquidator_swapper,
-        //         self.swapper_address
-        //     );
-        // }
+        // Ensure the liquidator is configured correctly.
+        let liquidator = Liquidator::new(self.liquidator_address, provider);
+        let liquidator_swapper = liquidator.swapperAddress().call().await?;
+
+        if liquidator_swapper != self.swapper_address {
+            anyhow::bail!(
+                "On chain {} the swapper address configured for the liquidator is different than the one that is configured for the bot, this is a misconfiguration. contract={}, bot={}",
+                self.chain_id,
+                liquidator_swapper,
+                self.swapper_address
+            );
+        }
 
         Ok(())
     }
@@ -220,13 +220,12 @@ mod test {
         validate_configuration_file("https://binance-smart-chain-public.nodies.app", 56).await;
         validate_configuration_file("https://unichain-rpc.publicnode.com", 130).await;
         validate_configuration_file("https://rpc4.monad.xyz", 143).await;
-        validate_configuration_file("https://sonic.drpc.org", 146).await;
+        validate_configuration_file("https://rpc.soniclabs.com", 146).await;
         validate_configuration_file("https://rpc.tac.build", 239).await;
         validate_configuration_file("https://rpc.hypurrscan.io", 999).await;
-        validate_configuration_file("https://rpc.ankr.com/swell", 1923).await;
         validate_configuration_file("https://base.api.pocket.network", 8453).await;
         validate_configuration_file("https://plasma.drpc.org", 9745).await;
-        validate_configuration_file("https://arbitrum.drpc.org", 42161).await;
+        validate_configuration_file("https://1rpc.io/arb", 42161).await;
         validate_configuration_file("https://1rpc.io/avax/c", 43114).await;
         validate_configuration_file("https://linea.rpc.sentio.xyz", 59144).await;
         validate_configuration_file("https://rpc.gobob.xyz", 60808).await;
@@ -234,6 +233,8 @@ mod test {
     }
 
     async fn validate_configuration_file(rpc_url: &str, chain_id: u64) {
+        println!("Validating {}", chain_id);
+
         // Generate an EOA wallet.
         // NOTE: This is not a private key that is ever used, it holds no funds, it is just a
         // placeholder here to pass some checks about the validity of the configuration file.
