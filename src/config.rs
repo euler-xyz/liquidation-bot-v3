@@ -160,6 +160,30 @@ impl Config {
             );
         }
 
+        let liquidator_evc = liquidator.evcAddress().call().await?;
+        if liquidator_evc != self.evc_address {
+            anyhow::bail!(
+                "On chain {} the evc address configured for the liquidator is different than the one that is configured for the bot, this is a misconfiguration. contract={}, bot={}",
+                self.chain_id,
+                liquidator_evc,
+                self.swapper_address
+            );
+        }
+
+        let liquidator_pyth = liquidator.PYTH().call().await?;
+        match (liquidator_pyth, self.pyth_address) {
+            (pyth, Some(local_pyth)) if pyth == local_pyth => {}
+            (pyth, None) if pyth == Address::ZERO => {}
+            _ => {
+                anyhow::bail!(
+                    "On chain {} the pyth address configured for the liquidator is different than the one that is configured for the bot, this is a misconfiguration. contract={}, bot={:?}",
+                    self.chain_id,
+                    liquidator_pyth,
+                    self.pyth_address
+                );
+            }
+        };
+
         Ok(())
     }
 }
@@ -224,9 +248,9 @@ mod test {
         validate_configuration_file("https://rpc.tac.build", 239).await;
         validate_configuration_file("https://rpc.hypurrscan.io", 999).await;
         validate_configuration_file("https://base.api.pocket.network", 8453).await;
-        validate_configuration_file("https://plasma.drpc.org", 9745).await;
-        validate_configuration_file("https://1rpc.io/arb", 42161).await;
-        validate_configuration_file("https://1rpc.io/avax/c", 43114).await;
+        validate_configuration_file("https://rpc.plasma.to", 9745).await;
+        validate_configuration_file("https://public-arb-mainnet.fastnode.io", 42161).await;
+        validate_configuration_file("https://avalanche-c-chain-rpc.publicnode.com", 43114).await;
         validate_configuration_file("https://linea.rpc.sentio.xyz", 59144).await;
         validate_configuration_file("https://rpc.gobob.xyz", 60808).await;
         validate_configuration_file("https://rpc.berachain.com", 80094).await;
