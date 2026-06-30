@@ -251,7 +251,7 @@ pub async fn run(
     provider: &DynProvider,
 
     accounts: Arc<AccountsTracker>,
-    mut vaults: Vaults,
+    vaults: Vaults,
     oracles: OraclesCache,
 
     // Channels for communicating with the other threads.
@@ -274,7 +274,7 @@ pub async fn run(
             _ = resync_interval.tick() => {
                 info!("Syncing all accounts and checking the health for each of them.");
 
-                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &mut vaults, &oracles).await {
+                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &vaults, &oracles).await {
                     Ok(unhealthy_accounts) => unhealthy_accounts,
                     Err(e) => {
                         tracing::error!("Error while refreshing, err:{:?}", e);
@@ -366,7 +366,7 @@ pub async fn run(
                 match fetch_account(
                     provider.clone().erased(),
                     &config.vault_filter,
-                    &mut vaults,
+                    &vaults,
                     config.account_lens_address,
                     config.evc_address,
                     account_event,
@@ -518,7 +518,7 @@ pub async fn refresh_and_check_all(
     provider: &DynProvider,
     config: Config,
     accounts: &Arc<AccountsTracker>,
-    vaults: &mut Vaults,
+    vaults: &Vaults,
     oracles: &OraclesCache,
 ) -> Result<Vec<Account>> {
     let subgraph_url = Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;
@@ -553,38 +553,40 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter() {
-        debug!("Loading {}", account);
-
+    let filter = &config.vault_filter;
+    let _: Vec<_> = stream::iter(accounts_to_fetch).map(|account| async move {
         match fetch_account(
             provider.clone().erased(),
-            &config.vault_filter,
+            filter,
             vaults,
             config.account_lens_address,
             config.evc_address,
-            *account,
+            account,
         )
-        .await
-        {
-            Ok(account) => {
-                // Track its (new) state.
-                accounts.add(account);
+            .await
+            {
+                Ok(account) => {
+                    // Track its (new) state.
+                    accounts.add(account);
+                }
+                Err(lens::FetchAccountError::FilteredOut(vault)) => {
+                    // NOTE: Should we delete the account from the index if it was already
+                    // in there? That *shouldn't* be possible but would be a strange edge-case
+                    // if it was somehow in there.
+                    tracing::debug!(
+                        "Account {} was not indexed due to it being filtered out by the vault filter for vault {}",
+                        *account,
+                        vault
+                    );
+                }
+                Err(lens::FetchAccountError::Other(e)) => {
+                    tracing::warn!("Issue while fetching account during re-sync, err: {:?}", e);
+                }
             }
-            Err(lens::FetchAccountError::FilteredOut(vault)) => {
-                // NOTE: Should we delete the account from the index if it was already
-                // in there? That *shouldn't* be possible but would be a strange edge-case
-                // if it was somehow in there.
-                tracing::debug!(
-                    "Account {} was not indexed due to it being filtered out by the vault filter for vault {}",
-                    *account,
-                    vault
-                );
-            }
-            Err(lens::FetchAccountError::Other(e)) => {
-                tracing::warn!("Issue while fetching account during re-sync, err: {:?}", e);
-            }
-        }
-    }
+    })
+    .buffer_unordered(16)
+    .collect()
+    .await;
 
     // Attempt to ensure we have all prices we will need for the healthcheck.
     oracles
