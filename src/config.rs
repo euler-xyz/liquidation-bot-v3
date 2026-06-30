@@ -215,8 +215,6 @@ pub fn get_config() -> Result<Config> {
     // The file that will be used as the config file.
     let config_file = format!("Config.{}.toml", chain_id);
 
-    dbg!(&config_file);
-
     let config: Config = Figment::new()
         .merge(figment::providers::Serialized::from(&rpc, "default"))
         .merge(Toml::file(config_file))
