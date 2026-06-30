@@ -7,6 +7,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder, ext::AnvilApi},
     signers::local::PrivateKeySigner,
 };
+use futures::{StreamExt, stream};
 use itertools::Itertools;
 use reqwest::Url;
 use std::{collections::HashMap, sync::Arc};
@@ -250,7 +251,7 @@ pub async fn run(
     provider: &DynProvider,
 
     accounts: Arc<AccountsTracker>,
-    mut vaults: Vaults,
+    vaults: Vaults,
     oracles: OraclesCache,
 
     // Channels for communicating with the other threads.
@@ -273,7 +274,7 @@ pub async fn run(
             _ = resync_interval.tick() => {
                 info!("Syncing all accounts and checking the health for each of them.");
 
-                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &mut vaults, &oracles).await {
+                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &vaults, &oracles).await {
                     Ok(unhealthy_accounts) => unhealthy_accounts,
                     Err(e) => {
                         tracing::error!("Error while refreshing, err:{:?}", e);
@@ -292,17 +293,13 @@ pub async fn run(
                 info!("While resyncing we found {} accounts that are unhealthy, now checking which we can/should liquidate..", number_of_unhealthy);
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                // This immediatly sends them over the liqudiation channel.
+                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts, Some(&liquidation_channel)).await.inspect_err(|e| {
                     tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {:?}", e);
                 }).unwrap_or_default();
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
-                    info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
-                }
-
-                // Send it to the liquidations thread to handle.
-                for liquidation in liquidations.into_iter() {
-                    let _ = liquidation_channel.send(liquidation).await;
+                    info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
                 }
             }
             Some(oracle_updates) = oracle_update_channel.recv() => {
@@ -345,17 +342,12 @@ pub async fn run(
                 let number_of_unhealthy = unhealthy_accounts.len();
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts, Some(&liquidation_channel)).await.inspect_err(|e| {
                     tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
                 }).unwrap_or_default();
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
-                    info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
-                }
-
-                // Send it to the liquidations thread to handle.
-                for liquidation in liquidations.into_iter() {
-                    let _ = liquidation_channel.send(liquidation).await;
+                    info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
                 }
             },
             // Track when an event happens on chain involving an account that potentially updates
@@ -365,7 +357,7 @@ pub async fn run(
                 match fetch_account(
                     provider.clone().erased(),
                     &config.vault_filter,
-                    &mut vaults,
+                    &vaults,
                     config.account_lens_address,
                     config.evc_address,
                     account_event,
@@ -393,15 +385,17 @@ pub async fn run(
     }
 }
 
+/// For a set of unhealthy accounts, attempts to liquidate them, returns accounts for which it send
+/// a liquidation onto the liquidation channel.
 pub async fn prepare_liquidations(
     provider: &DynProvider,
     swap_provider: &impl SwapQuoteProvider,
     config: &Config,
     oracles: &OraclesCache,
     unhealthy_accounts: Vec<Account>,
+    liquidation_channel: Option<&Sender<PreparedLiquidation>>,
 ) -> Result<Vec<PreparedLiquidation>> {
-    let mut prepared = Vec::new();
-    for account in unhealthy_accounts.iter() {
+    let prepared: Vec<_> = stream::iter(unhealthy_accounts).map(|account| async move { 
         // First we check if any of the oracles this account makes use of are Pyth.
         // If so we need to fetch their most recent quotes.
         let mut pyth_ids = Vec::new();
@@ -423,7 +417,7 @@ pub async fn prepare_liquidations(
                 .pyth_ids()
                 .iter()
                 .for_each(|new_id| pyth_ids.push(*new_id));
-        }
+            }
 
         // Fetch pyth data if needed.
         let pyth = match (!pyth_ids.is_empty(), config.pyth_address) {
@@ -439,11 +433,13 @@ pub async fn prepare_liquidations(
                         );
 
                         account.set_status(LiquidationReasoning::Error(
-                            LiquidationReasoningError::OracleError {
-                                message: "Unable to fetch Pyth data".to_string(),
-                            },
+                                LiquidationReasoningError::OracleError {
+                                    message: "Unable to fetch Pyth data".to_string(),
+                                },
                         ));
-                        continue;
+                        return Err(anyhow!(
+                                "Unable to fetch pyth data due to {}", e
+                        ));
                     }
                 }
             }
@@ -452,13 +448,13 @@ pub async fn prepare_liquidations(
             // this chain, this is a critical error.
             (true, None) => {
                 account.set_status(LiquidationReasoning::Error(
-                    LiquidationReasoningError::OracleError {
-                        message: "Unable to fetch Pyth data".to_string(),
-                    },
+                        LiquidationReasoningError::OracleError {
+                            message: "Unable to fetch Pyth data".to_string(),
+                        },
                 ));
 
                 return Err(anyhow!(
-                    "This account requires us to update pyth oracles, but there is no pyth deployment configured for this chain"
+                        "This account requires us to update pyth oracles, but there is no pyth deployment configured for this chain"
                 ));
             }
         };
@@ -472,31 +468,50 @@ pub async fn prepare_liquidations(
             config.liquidator_address,
             account.clone().clone(),
         )
-        .await
-        {
-            Ok(Some(liquidation)) => {
-                debug!("Found route to liquidate {}", account.address);
-                prepared.push(liquidation)
-            }
-            Ok(None) => {
-                account.set_status(LiquidationReasoning::NoSwapPath);
-                debug!(
-                    "Was not able to find a route to liquidate {}",
-                    account.address
-                );
-            }
-            Err(e) => {
-                account.set_status(LiquidationReasoning::Error(e.clone()));
+            .await
+            {
+                Ok(Some(liquidation)) => {
+                    // If we should send it to the liquidation channel we do so now.
+                    if let Some(liquidation_channel) = liquidation_channel {
+                        let _ = liquidation_channel.send(liquidation.clone()).await.inspect_err(|e| 
+                            tracing::error!("Error while attempting to send liquidation over the channel, this is fatal. err: {}", e)
+                        );
+                    }
 
-                tracing::error!(
-                    account =? account.address,
-                    "Issue when attempting to liquidate account, err: {:?}",
-                    e
-                )
+                    debug!("Found route to liquidate {}", account.address);
+                    Ok(Some(liquidation))
+                }
+                Ok(None) => {
+                    account.set_status(LiquidationReasoning::NoSwapPath);
+                    debug!(
+                        "Was not able to find a route to liquidate {}",
+                        account.address
+                    );
+                    Ok(None)
+                }
+                Err(e) => {
+                    account.set_status(LiquidationReasoning::Error(e.clone()));
+
+                    tracing::error!(
+                        account =? account.address,
+                        "Issue when attempting to liquidate account, err: {:?}",
+                        e
+                    );
+
+                    return Err(anyhow!("Error while attempting to prepare liquidation, err: {:?}", e));
+                }
             }
-        }
     }
-
+    ).buffer_unordered(16)
+        .filter_map(async move |a|
+            match a {
+                Ok(a) => a,
+                Err(e) => None,
+            } 
+        )
+        .collect()
+        .await;
+    
     Ok(prepared)
 }
 
@@ -504,7 +519,7 @@ pub async fn refresh_and_check_all(
     provider: &DynProvider,
     config: Config,
     accounts: &Arc<AccountsTracker>,
-    vaults: &mut Vaults,
+    vaults: &Vaults,
     oracles: &OraclesCache,
 ) -> Result<Vec<Account>> {
     let subgraph_url = Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;
@@ -539,38 +554,40 @@ pub async fn refresh_and_check_all(
 
     // For each account fetch all their positions in vaults.
     // We do this as a seperate step as this also filters out accounts that are not relevant.
-    for account in accounts_to_fetch.iter() {
-        debug!("Loading {}", account);
-
+    let filter = &config.vault_filter;
+    let _: Vec<_> = stream::iter(accounts_to_fetch).map(|account| async move {
         match fetch_account(
             provider.clone().erased(),
-            &config.vault_filter,
+            filter,
             vaults,
             config.account_lens_address,
             config.evc_address,
-            *account,
+            account,
         )
-        .await
-        {
-            Ok(account) => {
-                // Track its (new) state.
-                accounts.add(account);
+            .await
+            {
+                Ok(account) => {
+                    // Track its (new) state.
+                    accounts.add(account);
+                }
+                Err(lens::FetchAccountError::FilteredOut(vault)) => {
+                    // NOTE: Should we delete the account from the index if it was already
+                    // in there? That *shouldn't* be possible but would be a strange edge-case
+                    // if it was somehow in there.
+                    tracing::debug!(
+                        "Account {} was not indexed due to it being filtered out by the vault filter for vault {}",
+                        *account,
+                        vault
+                    );
+                }
+                Err(lens::FetchAccountError::Other(e)) => {
+                    tracing::warn!("Issue while fetching account during re-sync, err: {:?}", e);
+                }
             }
-            Err(lens::FetchAccountError::FilteredOut(vault)) => {
-                // NOTE: Should we delete the account from the index if it was already
-                // in there? That *shouldn't* be possible but would be a strange edge-case
-                // if it was somehow in there.
-                tracing::debug!(
-                    "Account {} was not indexed due to it being filtered out by the vault filter for vault {}",
-                    *account,
-                    vault
-                );
-            }
-            Err(lens::FetchAccountError::Other(e)) => {
-                tracing::warn!("Issue while fetching account during re-sync, err: {:?}", e);
-            }
-        }
-    }
+    })
+    .buffer_unordered(16)
+    .collect()
+    .await;
 
     // Attempt to ensure we have all prices we will need for the healthcheck.
     oracles
@@ -713,15 +730,14 @@ pub async fn fetch_all_accounts(
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
+    use std::{env, path::Path, str::FromStr};
 
     use crate::{
-        config::VaultFilter,
+        config::{VaultFilter, load_configuration_file_for_test},
         lens::fetch_account,
         liquidation::{PreparedLiquidation, prepare_liquidation},
         oracles::OraclesCache,
         prices::EulerPricingApi,
-        pyth::fetch_pyth_data,
         swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuoteProvider},
         transactions::execute_liquidation_queue,
         types::LiquidationReasoningError,
@@ -865,43 +881,32 @@ mod test {
     }
 
     #[tokio::test]
-    async fn bera_debug() {
+    async fn debug_transaction() {
+        let rpc_url = std::env::var("MAINNET_RPC").expect("BERA_RPC must be set");
+        let chain_id = 1;
+
         // Configure tracing.
         tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
             .init();
 
-        // let block = 86125670;
-        let violator = address!("0x7bfee91193d9df2ac0bfe90191d40f23c773c061");
-        let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
-
-        // Avax configuration.
-        let evc = address!("0x45334608ECE7B2775136bC847EB92B5D332806A9");
-        let vault_lens = address!("0x9e43CC80664Cc5Af5D0a37d821305377ae6911Bb");
-        let account_lens = address!("0xfC09040C5E26aec5E55a93F6856159A0C28ffDB9");
-        let oracle_lens = address!("0x8555B31Ce5ebCD6F8a031ff599728eeb276634d3");
-        let pyth = address!("0x2880aB155794e7179c9eE2e38200202908C17B43");
-        let swapper = address!("0x83Ee58fE951bb0133F4E30D61863988378CD665E");
-        let wrapped_native_asset = address!("0x6969696969696969696969696969696969696969");
+        env::set_current_dir(Path::new("./configs")).expect("failed to cd into ./configs");
+        let config = load_configuration_file_for_test(&rpc_url, chain_id).unwrap();
+        let violator = address!("0xf7121a3616752e29ced0a04ae5df6d76335ada0d");
 
         // Network specific configuration.
-        let vaults = &mut Vaults::new(vault_lens);
-        let oracles = OraclesCache::new(oracle_lens, Some(pyth));
-        let liquidator_address = address!("0xbB4fB2b4410e9b024d2df17329d288F4de46c8bA");
+        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
 
-        let bera_rpc = std::env::var("BERA_RPC").expect("BERA_RPC must be set");
-
-        let provider = ProviderBuilder::new()
-            .connect_http(bera_rpc.parse().unwrap())
-            .erased();
+        let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 
         // Fetch the account.
         let account = fetch_account(
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            account_lens,
-            evc,
+            config.account_lens_address,
+            config.evc_address,
             violator,
         )
         .await
@@ -937,16 +942,16 @@ mod test {
             &EulerSwapApi::new(
                 "https://swap.euler.finance".parse().unwrap(),
                 provider.clone().erased(),
-                80094,
-                liquidator_address,
-                liquidator_address,
-                swapper,
-                wrapped_native_asset,
+                chain_id,
+                config.liquidator_address,
+                config.liquidator_address,
+                config.swapper_address,
+                config.wrapped_native_asset_address,
                 "5", // Max slippage
-                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 80094),
+                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), chain_id),
             ),
             None,
-            liquidator_address,
+            config.liquidator_address,
             account.clone(),
         )
         .await;

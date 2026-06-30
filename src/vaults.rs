@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use alloy::{primitives::Address, providers::DynProvider, sol};
+use dashmap::DashMap;
 
 use crate::{
     liquidation::get_shares_to_underlying,
@@ -10,7 +11,7 @@ use anyhow::{Context, Result};
 
 pub struct Vaults {
     vault_lens: Address,
-    vaults: HashMap<Address, Arc<Vault>>,
+    vaults: DashMap<Address, Arc<Vault>>,
 }
 
 sol! {
@@ -57,12 +58,12 @@ impl Vaults {
     pub fn new(vault_lens: Address) -> Vaults {
         Vaults {
             vault_lens,
-            vaults: HashMap::new(),
+            vaults: DashMap::new(),
         }
     }
 
     pub async fn get_or_fetch(
-        &mut self,
+        &self,
         provider: &DynProvider,
         address: Address,
     ) -> Result<Arc<Vault>> {

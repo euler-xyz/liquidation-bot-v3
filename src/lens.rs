@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{Error, Result};
 
 use alloy::{primitives::Address, providers::DynProvider, sol};
@@ -110,7 +112,7 @@ pub enum FetchAccountError {
 pub async fn fetch_account(
     provider: DynProvider,
     filter: &VaultFilter,
-    vaults: &mut Vaults,
+    vaults: &Vaults,
     account_lens: Address,
     evc: Address,
     account: Address,
