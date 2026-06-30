@@ -293,17 +293,13 @@ pub async fn run(
                 info!("While resyncing we found {} accounts that are unhealthy, now checking which we can/should liquidate..", number_of_unhealthy);
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                // This immediatly sends them over the liqudiation channel.
+                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts, Some(&liquidation_channel)).await.inspect_err(|e| {
                     tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {:?}", e);
                 }).unwrap_or_default();
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
-                    info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
-                }
-
-                // Send it to the liquidations thread to handle.
-                for liquidation in liquidations.into_iter() {
-                    let _ = liquidation_channel.send(liquidation).await;
+                    info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
                 }
             }
             Some(oracle_updates) = oracle_update_channel.recv() => {
@@ -346,17 +342,12 @@ pub async fn run(
                 let number_of_unhealthy = unhealthy_accounts.len();
 
                 // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts).await.inspect_err(|e| {
+                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts, Some(&liquidation_channel)).await.inspect_err(|e| {
                     tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
                 }).unwrap_or_default();
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
-                    info!("Found {} accounts that are unhealthy, for which we are going to perform a liquidation for {} of them", number_of_unhealthy, liquidations.len());
-                }
-
-                // Send it to the liquidations thread to handle.
-                for liquidation in liquidations.into_iter() {
-                    let _ = liquidation_channel.send(liquidation).await;
+                    info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
                 }
             },
             // Track when an event happens on chain involving an account that potentially updates
@@ -394,19 +385,22 @@ pub async fn run(
     }
 }
 
+/// For a set of unhealthy accounts, attempts to liquidate them, returns accounts for which it send
+/// a liquidation onto the liquidation channel.
 pub async fn prepare_liquidations(
     provider: &DynProvider,
     swap_provider: &impl SwapQuoteProvider,
     config: &Config,
     oracles: &OraclesCache,
     unhealthy_accounts: Vec<Account>,
+    liquidation_channel: Option<&Sender<PreparedLiquidation>>,
 ) -> Result<Vec<PreparedLiquidation>> {
     let prepared: Vec<_> = stream::iter(unhealthy_accounts).map(|account| async move { 
         // First we check if any of the oracles this account makes use of are Pyth.
         // If so we need to fetch their most recent quotes.
         let mut pyth_ids = Vec::new();
         for oracle in account.dependent_on().iter() {
-            let oracle_type = oracles.fetch_type(&provider, oracle.clone()).await;
+            let oracle_type = oracles.fetch_type(provider, oracle.clone()).await;
 
             let oracle_type = match oracle_type {
                 Ok(t) => t,
@@ -428,7 +422,7 @@ pub async fn prepare_liquidations(
         // Fetch pyth data if needed.
         let pyth = match (!pyth_ids.is_empty(), config.pyth_address) {
             (true, Some(pyth)) => {
-                match fetch_pyth_data(&provider, pyth, pyth_ids).await {
+                match fetch_pyth_data(provider, pyth, pyth_ids).await {
                     Ok(data) => Some(data),
                     Err(e) => {
                         // We log the error and then skip this liquidation as we need to attempt to
@@ -468,7 +462,7 @@ pub async fn prepare_liquidations(
         debug!("Checking liquidation for {}", account.address);
 
         match prepare_liquidation(
-            &provider,
+            provider,
             swap_provider,
             pyth,
             config.liquidator_address,
@@ -477,8 +471,15 @@ pub async fn prepare_liquidations(
             .await
             {
                 Ok(Some(liquidation)) => {
+                    // If we should send it to the liquidation channel we do so now.
+                    if let Some(liquidation_channel) = liquidation_channel {
+                        let _ = liquidation_channel.send(liquidation.clone()).await.inspect_err(|e| 
+                            tracing::error!("Error while attempting to send liquidation over the channel, this is fatal. err: {}", e)
+                        );
+                    }
+
                     debug!("Found route to liquidate {}", account.address);
-                    return Ok(Some(liquidation))
+                    Ok(Some(liquidation))
                 }
                 Ok(None) => {
                     account.set_status(LiquidationReasoning::NoSwapPath);
@@ -486,7 +487,7 @@ pub async fn prepare_liquidations(
                         "Was not able to find a route to liquidate {}",
                         account.address
                     );
-                    return Ok(None);
+                    Ok(None)
                 }
                 Err(e) => {
                     account.set_status(LiquidationReasoning::Error(e.clone()));
@@ -737,7 +738,6 @@ mod test {
         liquidation::{PreparedLiquidation, prepare_liquidation},
         oracles::OraclesCache,
         prices::EulerPricingApi,
-        pyth::fetch_pyth_data,
         swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuoteProvider},
         transactions::execute_liquidation_queue,
         types::LiquidationReasoningError,
