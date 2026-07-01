@@ -46,6 +46,9 @@ pub struct Config {
     // The RPC url of the chain.
     pub rpc_url: Url,
 
+    // The RPC url to use to send transactions, mostly used for sending to MEV protected RPCs.
+    pub transaction_rpc_url: Option<Url>,
+
     // The subgraph to get accounts from.
     pub subgraph_url_prefix: String,
 
@@ -125,6 +128,20 @@ impl Config {
                 chain_id,
                 self.chain_id
             );
+        }
+
+        // Make sure the transaction RPC if set, is also valid and that its for the correct chain.
+        if let Some(transaction_rpc_url) = self.transaction_rpc_url.clone() {
+            let transaction_provider = ProviderBuilder::new().connect_http(transaction_rpc_url);
+            let transaction_provider_chain_id = transaction_provider.get_chain_id().await?;
+
+            if transaction_provider_chain_id != chain_id {
+                anyhow::bail!(
+                    "The configured Transaction RPC reports a chain_id ({}) that is not the same as the chain_id in the configuration file ({})",
+                    chain_id,
+                    self.chain_id
+                );
+            }
         }
 
         // Perform a sanity check on all contracts that are part of the configuration.

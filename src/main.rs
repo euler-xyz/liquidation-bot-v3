@@ -188,12 +188,23 @@ async fn main() {
 
             (provider, Some(network))
         }
-        false => (
-            ProviderBuilder::new()
+        false => {
+            // If we are using a specific RPC for executing transactions, then use that one,
+            // otherwise we use the RPC we use for everything else.
+            let rpc_url = match config.transaction_rpc_url.clone() {
+                Some(rpc_url) => {
+                    tracing::info!("Using `transaction_rpc_url` for performing liquidations.");
+                    rpc_url
+                },
+                None => {
+                    config.rpc_url.clone()
+                }
+            };
+
+            (ProviderBuilder::new()
                 .wallet(pk_signer)
-                .connect_http(config.rpc_url.clone()),
-            None,
-        ),
+                .connect_http(rpc_url), None)
+        },
     };
 
     let profit_receiver = config.profit_receiver;
