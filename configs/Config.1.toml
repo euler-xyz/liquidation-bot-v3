@@ -4,7 +4,6 @@ subgraph_url_path = "subgraphs/euler-simple-mainnet/latest/gn"
 # We use the Flashbots protect endpoint for sending transactions on mainnet to prevent being frontran.
 transaction_rpc_url = "https://rpc.flashbots.net/?builder=f1b.io&builder=rsync&builder=beaverbuild.org&builder=builder0x69&builder=Titan&builder=EigenPhi&builder=Gambit+Labs&builder=payload&builder=Loki&builder=JetBuilder&builder=tbuilder&builder=bobthebuilder&builder=BTCS&builder=bloXroute&builder=Blockbeelder&builder=Quasar&builder=Eureka&builder=Bombora&hint=hash&refund=0x8cbB534874bab83e44a7325973D2F04493359dF8%3A60&originId=protect-website"
 evc_address = "0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"
-pyth_address = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6"
 swapper_address = "0x719F8b330CcA71cb6195D032A43194C7D3F9Fb45"
 wrapped_native_asset_address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 oracle_lens_address = "0x30E6dFB84782A31d561536f64F47231451F7b48A"
@@ -17,6 +16,10 @@ profit_receiver = "0x8cbB534874bab83e44a7325973D2F04493359dF8"
 oracle_polling_interval_seconds = 30
 full_resync_and_check_interval_seconds = 3600 
 enable_observability_api = true
+
+[pyth]
+address = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6"
+endpoint = "https://hermes.pyth.network/"
 
 [vault_filter]
 mode = "Blacklist"

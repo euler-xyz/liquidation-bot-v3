@@ -64,8 +64,7 @@ pub struct Config {
     // The evc contract address.
     pub evc_address: Address,
 
-    // The address of the pyth contracts.
-    pub pyth_address: Option<Address>,
+    pub pyth: Option<PythConfig>,
 
     // The address of the swapper contract.
     pub swapper_address: Address,
@@ -113,6 +112,12 @@ pub struct Config {
     pub enable_observability_api: bool,
 }
 
+#[derive(Deserialize, Clone, Debug)]
+pub struct PythConfig {
+    pub address: Address,
+    pub endpoint: String,
+}
+
 impl Config {
     /// Attempts to ensure the config is valid
     pub async fn validate_config(&self) -> Result<()> {
@@ -148,8 +153,17 @@ impl Config {
         check_address(&provider, self.evc_address, "EVC").await?;
 
         // Not all chains (specifically TAC) have a pyth deployment.
-        if let Some(pyth_address) = self.pyth_address {
-            check_address(&provider, pyth_address, "Pyth").await?;
+        if let Some(pyth) = &self.pyth {
+            // TODO: Check endpoint.
+            check_address(&provider, pyth.address, "Pyth").await?;
+
+            // Check that the pyth endpoints ends with a `/`.
+            if !pyth.endpoint.ends_with("/") {
+                anyhow::bail!(
+                    "The configured endpoint for Pyth is either incorrect or is missing a trailing '/', the URL that is configured is {}",
+                    pyth.endpoint.clone()
+                );
+            }
         }
 
         check_address(&provider, self.swapper_address, "swapper").await?;
@@ -188,15 +202,15 @@ impl Config {
         }
 
         let liquidator_pyth = liquidator.PYTH().call().await?;
-        match (liquidator_pyth, self.pyth_address) {
-            (pyth, Some(local_pyth)) if pyth == local_pyth => {}
+        match (liquidator_pyth, self.pyth.clone()) {
+            (pyth, Some(local_pyth)) if pyth == local_pyth.address => {}
             (pyth, None) if pyth == Address::ZERO => {}
             _ => {
                 anyhow::bail!(
                     "On chain {} the pyth address configured for the liquidator is different than the one that is configured for the bot, this is a misconfiguration. contract={}, bot={:?}",
                     self.chain_id,
                     liquidator_pyth,
-                    self.pyth_address
+                    self.pyth
                 );
             }
         };
