@@ -128,7 +128,7 @@ async fn main() {
     // Our singleton vault store.
     let vaults = Vaults::new(config.vault_lens_address);
     let accounts = Arc::new(AccountsTracker::new());
-    let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
+    let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
     let (account_events_sender, account_events_receiver) = mpsc::channel::<Address>(100);
     let account_provider = provider.clone();
@@ -431,9 +431,9 @@ pub async fn prepare_liquidations(
             }
 
         // Fetch pyth data if needed.
-        let pyth = match (!pyth_ids.is_empty(), config.pyth_address) {
+        let pyth = match (!pyth_ids.is_empty(), &config.pyth) {
             (true, Some(pyth)) => {
-                match fetch_pyth_data(provider, pyth, pyth_ids).await {
+                match fetch_pyth_data(provider, pyth.clone(), pyth_ids).await {
                     Ok(data) => Some(data),
                     Err(e) => {
                         // We log the error and then skip this liquidation as we need to attempt to
@@ -907,7 +907,7 @@ mod test {
 
         // Network specific configuration.
         let vaults = &mut Vaults::new(config.vault_lens_address);
-        let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth_address);
+        let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth);
 
         let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 

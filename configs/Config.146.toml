@@ -2,7 +2,6 @@ swap_url = "https://swap.euler.finance"
 pricing_url = "https://v3.euler.finance"
 subgraph_url_path = "subgraphs/euler-simple-sonic/latest/gn"
 evc_address = "0x4860C903f6Ad709c3eDA46D3D502943f184D4315"
-pyth_address = "0x2880aB155794e7179c9eE2e38200202908C17B43"
 swapper_address = "0x2cb79cdA6Bb09A901177D5227b4aA1584Dbcfc9B"
 liquidator_address = "0x407e262B7F0248a2721e2aD3BB687bd59F902498"
 wrapped_native_asset_address = "0x039e2fB66102314Ce7b64Ce5Ce3E5183bc94aD38"
@@ -15,6 +14,10 @@ profit_receiver = "0x8cbB534874bab83e44a7325973D2F04493359dF8"
 oracle_polling_interval_seconds = 30
 full_resync_and_check_interval_seconds = 3600 
 enable_observability_api = true
+
+[pyth]
+address = "0x2880aB155794e7179c9eE2e38200202908C17B43"
+endpoint = "https://hermes.pyth.network/"
 
 [vault_filter]
 mode = "Blacklist"

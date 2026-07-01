@@ -16,6 +16,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    config::PythConfig,
     pyth::{
         Pyth::{self},
         fetch_pyth_data,
@@ -30,7 +31,7 @@ pub struct OraclesCache {
     lens: Address,
 
     // Not all chains have a pyth deployment.
-    pyth: Option<Address>,
+    pyth: Option<PythConfig>,
 
     // The oracles that should be actively tracked.
     active_oracles: Arc<DashSet<OracleIdentifier>>,
@@ -43,7 +44,7 @@ pub struct OraclesCache {
 }
 
 impl OraclesCache {
-    pub fn new(oracle_lens: Address, pyth: Option<Address>) -> Self {
+    pub fn new(oracle_lens: Address, pyth: Option<PythConfig>) -> Self {
         OraclesCache {
             lens: oracle_lens,
             pyth,
@@ -200,7 +201,7 @@ impl OraclesCache {
         }
 
         // NOTE: handle the edge-case in which no pyth is configured, but we did find a pyth oracle.
-        let pyth = match self.pyth {
+        let pyth = match self.pyth.clone() {
             Some(pyth) => pyth,
             None => {
                 error!(
@@ -210,9 +211,11 @@ impl OraclesCache {
             }
         };
 
-        let pyth_call = match fetch_pyth_data(provider, pyth, pyth_ids).await {
-            Ok(data) => CallItemBuilder::new(Pyth::new(pyth, provider).updatePriceFeeds(data.data))
-                .value(data.cost),
+        let pyth_call = match fetch_pyth_data(provider, pyth.clone(), pyth_ids).await {
+            Ok(data) => {
+                CallItemBuilder::new(Pyth::new(pyth.address, provider).updatePriceFeeds(data.data))
+                    .value(data.cost)
+            }
             // If the API call fails, then we will try to fetch the data from the chain anyway.
             // Perhaps it is still up-to-date.
             Err(e) => {
@@ -553,7 +556,9 @@ mod test {
     };
 
     use crate::{
+        config::PythConfig,
         oracles::{OracleType, OraclesCache},
+        pyth::DEFAULT_PYTH_ENDPOINT,
         types::OracleIdentifier,
     };
 
@@ -596,7 +601,12 @@ mod test {
             .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
             .erased();
 
-        let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, Some(MAINNET_PYTH));
+        let pyth = PythConfig {
+            address: MAINNET_PYTH,
+            endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
+        };
+
+        let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, Some(pyth));
         oracles
             .fetch_latest_price(&provider, oracle.clone())
             .await

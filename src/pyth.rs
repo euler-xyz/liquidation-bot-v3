@@ -7,7 +7,12 @@ use alloy::{
 };
 use anyhow::{Result, anyhow};
 use itertools::Itertools;
+use reqwest::Url;
 use serde::Deserialize;
+
+use crate::config::PythConfig;
+
+pub const DEFAULT_PYTH_ENDPOINT: &str = "https://hermes.pyth.network/";
 
 #[derive(Debug, Deserialize)]
 struct PythResponse {
@@ -70,23 +75,23 @@ sol! {
     }
 }
 
-async fn fetch_pyth(ids: Vec<FixedBytes<32>>) -> Result<PythResponse> {
+async fn fetch_pyth(endpoint: String, ids: Vec<FixedBytes<32>>) -> Result<PythResponse> {
     let request_url = format!(
-        "https://hermes.pyth.network/v2/updates/price/latest?ids[]={}",
+        "{}v2/updates/price/latest?ids[]={}",
+        endpoint,
         ids.iter().format("&ids[]=")
     );
 
     let body = reqwest::get(request_url.clone()).await?.text().await?;
-    // dbg!(request_url, &body);
     Ok(serde_json::from_str(&body)?)
 }
 
 pub async fn fetch_pyth_data(
     provider: &DynProvider,
-    pyth: Address,
+    pyth: PythConfig,
     ids: Vec<FixedBytes<32>>,
 ) -> Result<PythFeedInput> {
-    let data: Vec<Bytes> = fetch_pyth(ids)
+    let data: Vec<Bytes> = fetch_pyth(pyth.endpoint, ids)
         .await?
         .binary
         .data
@@ -98,7 +103,7 @@ pub async fn fetch_pyth_data(
         .collect::<Result<Vec<Bytes>>>()?;
 
     // Fetch the update cost.
-    let pyth = Pyth::new(pyth, provider);
+    let pyth = Pyth::new(pyth.address, provider);
     let cost = pyth.getUpdateFee(data.clone()).call().await?;
 
     Ok(PythFeedInput { data, cost })

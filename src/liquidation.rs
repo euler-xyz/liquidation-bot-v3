@@ -367,8 +367,13 @@ mod test {
     };
 
     use crate::{
-        config::VaultFilter, lens::fetch_account, liquidation::prepare_liquidation,
-        oracles::OraclesCache, prices::EulerPricingApi, pyth::fetch_pyth_data, swap::EulerSwapApi,
+        config::{PythConfig, VaultFilter},
+        lens::fetch_account,
+        liquidation::prepare_liquidation,
+        oracles::OraclesCache,
+        prices::EulerPricingApi,
+        pyth::{DEFAULT_PYTH_ENDPOINT, fetch_pyth_data},
+        swap::EulerSwapApi,
         vaults::Vaults,
     };
 
@@ -387,7 +392,11 @@ mod test {
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let oracles = OraclesCache::new(oracle_lens, Some(pyth_address));
+        let pyth = PythConfig {
+            address: pyth_address,
+            endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
+        };
+        let oracles = OraclesCache::new(oracle_lens, Some(pyth.clone()));
 
         let account = address!("0x68e9669391AD60B5D72B996a9bd523c3962D2883");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
@@ -422,7 +431,7 @@ mod test {
             true => {
                 // Call the Pyth API to fetch the most recent data for these oracles.
                 Some(
-                    fetch_pyth_data(&provider, pyth_address, pyth_ids)
+                    fetch_pyth_data(&provider, pyth.clone(), pyth_ids)
                         .await
                         .unwrap(),
                 )
@@ -466,7 +475,12 @@ mod test {
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let oracles = OraclesCache::new(oracle_lens, Some(pyth_address));
+        let pyth = PythConfig {
+            address: pyth_address,
+            endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
+        };
+
+        let oracles = OraclesCache::new(oracle_lens, Some(pyth.clone()));
 
         let account = address!("0xa8847b8bf827A9A8d03b2749Da4bC230A16c59d8");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
@@ -502,11 +516,7 @@ mod test {
         let pyth = match !pyth_ids.is_empty() {
             true => {
                 // Call the Pyth API to fetch the most recent data for these oracles.
-                Some(
-                    fetch_pyth_data(&provider, pyth_address, pyth_ids)
-                        .await
-                        .unwrap(),
-                )
+                Some(fetch_pyth_data(&provider, pyth, pyth_ids).await.unwrap())
             }
             false => None,
         };
@@ -545,7 +555,13 @@ mod test {
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let oracles = OraclesCache::new(oracle_lens, Some(pyth_address));
+
+        let pyth = PythConfig {
+            address: pyth_address,
+            endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
+        };
+
+        let oracles = OraclesCache::new(oracle_lens, Some(pyth.clone()));
 
         // Fetch an account.
         let account = fetch_account(
