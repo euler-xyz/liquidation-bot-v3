@@ -7,16 +7,13 @@ use alloy::{
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, time};
 use tracing::{debug, error, info};
 
 use crate::{
     oracles::{ORACLE_PRICING_UNIT, OraclesCache},
-    types::{
-        Account, LiquidationReasoning, OracleIdentifier, Vault, VaultBorrowPosition,
-        VaultCollateralPosition,
-    },
+    types::{Account, OracleIdentifier, Vault},
 };
 
 #[derive(Debug, Clone, Serialize)]

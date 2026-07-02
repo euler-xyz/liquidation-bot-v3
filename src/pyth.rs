@@ -1,23 +1,22 @@
 use std::str::FromStr;
 
 use alloy::{
-    primitives::{Address, Bytes, FixedBytes, U256},
+    primitives::{Bytes, FixedBytes, U256},
     providers::DynProvider,
     sol,
 };
 use anyhow::{Result, anyhow};
 use itertools::Itertools;
-use reqwest::Url;
 use serde::Deserialize;
 
 use crate::config::PythConfig;
 
+#[cfg(test)]
 pub const DEFAULT_PYTH_ENDPOINT: &str = "https://hermes.pyth.network/";
 
 #[derive(Debug, Deserialize)]
 struct PythResponse {
     pub binary: BinaryData,
-    // pub parsed: Vec<ParsedPriceFeed>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,28 +25,6 @@ struct BinaryData {
     pub data: Vec<String>,
 }
 
-// #[derive(Debug, Deserialize)]
-// struct ParsedPriceFeed {
-//     pub id: String,
-//     pub price: PriceInfo,
-//     pub ema_price: PriceInfo,
-//     // pub metadata: FeedMetadata,
-// }
-//
-// #[derive(Debug, Deserialize)]
-// pub struct PriceInfo {
-//     pub price: U256,
-//     pub conf: U256,
-//     pub expo: i32,
-//     pub publish_time: i64,
-// }
-
-// #[derive(Debug, Deserialize)]
-// pub struct FeedMetadata {
-//     pub slot: u64,
-//     pub proof_available_time: i64,
-//     pub prev_publish_time: i64,
-// }
 #[derive(Debug, Clone)]
 pub struct PythFeedInput {
     pub data: Vec<Bytes>,

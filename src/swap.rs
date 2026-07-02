@@ -6,13 +6,11 @@ use std::{
 use alloy::{
     primitives::{Address, Bytes, U256},
     providers::{DynProvider, Provider},
-    serde::quantity::hashmap,
 };
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::trace;
 
 use crate::{
     liquidation::PreparedLiquidation, prices::PriceAsset, types::LiquidationReasoningError,
