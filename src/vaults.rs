@@ -1,13 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
-
-use alloy::{primitives::Address, providers::DynProvider, sol};
-use dashmap::DashMap;
-
 use crate::{
     liquidation::get_shares_to_underlying,
     types::{Ltv, Vault},
 };
+use alloy::{primitives::Address, providers::DynProvider, sol};
 use anyhow::{Context, Result};
+use dashmap::DashMap;
+use std::sync::Arc;
 
 pub struct Vaults {
     vault_lens: Address,

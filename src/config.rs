@@ -1,3 +1,4 @@
+use crate::liquidation::Liquidator;
 use alloy::{
     primitives::Address,
     providers::{Provider, ProviderBuilder},
@@ -10,8 +11,6 @@ use figment::{
 };
 use reqwest::Url;
 use serde::Deserialize;
-
-use crate::{config, liquidation::Liquidator};
 
 #[derive(Deserialize, Clone, Default)]
 pub enum VaultFilterMode {

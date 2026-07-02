@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
-use anyhow::{Error, Result};
-
 use alloy::{primitives::Address, providers::DynProvider, sol};
+use anyhow::{Error, Result};
 use tokio::time::Instant;
 use tracing::debug;
 

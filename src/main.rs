@@ -509,7 +509,7 @@ pub async fn prepare_liquidations(
                         e
                     );
 
-                    return Err(anyhow!("Error while attempting to prepare liquidation, err: {:?}", e));
+                    Err(anyhow!("Error while attempting to prepare liquidation, err: {:?}", e))
                 }
             }
     }
@@ -517,7 +517,10 @@ pub async fn prepare_liquidations(
         .filter_map(async move |a|
             match a {
                 Ok(a) => a,
-                Err(e) => None,
+                Err(e) => { 
+                    warn!("Error during preparing liquidation, err: {:?}", e);
+                    None
+                },
             } 
         )
         .collect()
@@ -741,7 +744,7 @@ pub async fn fetch_all_accounts(
 
 #[cfg(test)]
 mod test {
-    use std::{env, path::Path, str::FromStr};
+    use std::str::FromStr;
 
     use crate::{
         config::{VaultFilter, load_configuration_file_for_test},
@@ -759,7 +762,6 @@ mod test {
         primitives::{U256, address, bytes},
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
     };
-    use chrono::{DateTime, Utc};
     use tokio::sync::mpsc;
     use tracing_subscriber::EnvFilter;
 
@@ -789,7 +791,7 @@ mod test {
                 U256::from_str("15000000000000").unwrap(),
             );
 
-            return Ok(Some(liq));
+            Ok(Some(liq))
         }
     }
 
@@ -890,7 +892,7 @@ mod test {
         // Check that they no longer have any debt.
         assert!(account.borrows.is_empty());
     }
-
+    
     async fn debug_transaction() {
         let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let chain_id = 1;
@@ -971,6 +973,9 @@ mod test {
     }
 
     #[tokio::test]
+    // NOTE: We do not use the addresses from the config here, as some contracts did not exist at
+    // this block yet, but this is a nice test to have. So we use historic contracts. (specifically
+    // the liquidator contract).
     async fn liquidation_with_swap_data() {
         // This account is healthy at this block.
         let block = 24935457;
@@ -1093,6 +1098,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "Current RPC does not provide an archive of the pinned block"]
     async fn liquidation_monad() {
 
         // Configure tracing.

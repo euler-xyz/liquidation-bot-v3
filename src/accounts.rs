@@ -1,11 +1,8 @@
+use crate::types::{Account, OracleIdentifier, VaultBorrowPosition, VaultCollateralPosition};
 use alloy::primitives::Address;
 use dashmap::DashMap;
 use itertools::Itertools;
 use tracing::error;
-
-use crate::types::{
-    Account, LiquidationReasoning, OracleIdentifier, VaultBorrowPosition, VaultCollateralPosition,
-};
 
 pub struct AccountsTracker {
     accounts: DashMap<Address, Account>,

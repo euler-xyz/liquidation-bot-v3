@@ -367,7 +367,7 @@ mod test {
     };
 
     use crate::{
-        config::{PythConfig, VaultFilter},
+        config::{PythConfig, VaultFilter, load_configuration_file_for_test},
         lens::fetch_account,
         liquidation::prepare_liquidation,
         oracles::OraclesCache,
@@ -377,26 +377,17 @@ mod test {
         vaults::Vaults,
     };
 
-    const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
-
     #[tokio::test]
     async fn test_prepare_liquidation() {
-        let provider = ProviderBuilder::new()
-            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
-            .erased();
+        let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let chain_id = 1;
 
-        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
-        let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
-        let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
-        let swapper = address!("0x2Bba09866b6F1025258542478C39720A09B728bF");
+        let config = load_configuration_file_for_test(&rpc_url, chain_id).unwrap();
+        let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 
         // Our singleton vault store.
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let pyth = PythConfig {
-            address: pyth_address,
-            endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
-        };
-        let oracles = OraclesCache::new(oracle_lens, Some(pyth.clone()));
+        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
         let account = address!("0x68e9669391AD60B5D72B996a9bd523c3962D2883");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
@@ -406,8 +397,8 @@ mod test {
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -431,7 +422,7 @@ mod test {
             true => {
                 // Call the Pyth API to fetch the most recent data for these oracles.
                 Some(
-                    fetch_pyth_data(&provider, pyth.clone(), pyth_ids)
+                    fetch_pyth_data(&provider, config.pyth.unwrap(), pyth_ids)
                         .await
                         .unwrap(),
                 )
@@ -445,13 +436,16 @@ mod test {
                 &EulerSwapApi::new(
                     "https://swap.euler.finance".parse().unwrap(),
                     provider.erased(),
-                    1,
+                    config.chain_id,
                     liquidator_address,
                     liquidator_address,
-                    swapper,
-                    wrapped_native_asset,
+                    config.swapper_address,
+                    config.wrapped_native_asset_address,
                     "1", // Max slippage.
-                    EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
+                    EulerPricingApi::new(
+                        "https://v3.euler.finance".parse().unwrap(),
+                        config.chain_id
+                    ),
                 ),
                 pyth,
                 liquidator_address,
@@ -464,23 +458,15 @@ mod test {
 
     #[tokio::test]
     async fn test_prepare_liquidation_with_pyth() {
-        let provider = ProviderBuilder::new()
-            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
-            .erased();
+        let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let chain_id = 1;
 
-        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
-        let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
-        let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
-        let swapper = address!("0x2Bba09866b6F1025258542478C39720A09B728bF");
+        let config = load_configuration_file_for_test(&rpc_url, chain_id).unwrap();
+        let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 
         // Our singleton vault store.
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let pyth = PythConfig {
-            address: pyth_address,
-            endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
-        };
-
-        let oracles = OraclesCache::new(oracle_lens, Some(pyth.clone()));
+        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
         let account = address!("0xa8847b8bf827A9A8d03b2749Da4bC230A16c59d8");
         let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
@@ -490,14 +476,12 @@ mod test {
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
         .unwrap();
-
-        dbg!(&account);
 
         // First we check if any of the oracles this account makes use of are Pyth.
         // If so we need to fetch their most recent quotes.
@@ -516,60 +500,62 @@ mod test {
         let pyth = match !pyth_ids.is_empty() {
             true => {
                 // Call the Pyth API to fetch the most recent data for these oracles.
-                Some(fetch_pyth_data(&provider, pyth, pyth_ids).await.unwrap())
+                Some(
+                    fetch_pyth_data(&provider, config.pyth.unwrap(), pyth_ids)
+                        .await
+                        .unwrap(),
+                )
             }
             false => None,
         };
 
-        prepare_liquidation(
-            &provider.clone(),
-            &EulerSwapApi::new(
-                "https://swap.euler.finance".parse().unwrap(),
-                provider.erased(),
-                1,
+        dbg!(
+            prepare_liquidation(
+                &provider.clone(),
+                &EulerSwapApi::new(
+                    "https://swap.euler.finance".parse().unwrap(),
+                    provider.erased(),
+                    config.chain_id,
+                    liquidator_address,
+                    liquidator_address,
+                    config.swapper_address,
+                    config.wrapped_native_asset_address,
+                    "1", // Max slippage.
+                    EulerPricingApi::new(
+                        "https://v3.euler.finance".parse().unwrap(),
+                        config.chain_id
+                    ),
+                ),
+                pyth,
                 liquidator_address,
-                liquidator_address,
-                swapper,
-                wrapped_native_asset,
-                "1", // Max slippage
-                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
-            ),
-            pyth,
-            liquidator_address,
-            account,
-        )
-        .await
-        .unwrap();
+                account,
+            )
+            .await
+            .unwrap()
+        );
     }
 
     #[tokio::test]
     async fn test_check_if_liquidateble() {
-        let account = address!("0x421c4869095B637d59f25b427904D792dcBe0260");
+        let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let chain_id = 1;
 
-        let provider = ProviderBuilder::new()
-            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
-            .erased();
-
-        let oracle_lens = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
-        let pyth_address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
+        let config = load_configuration_file_for_test(&rpc_url, chain_id).unwrap();
+        let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 
         // Our singleton vault store.
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
-        let pyth = PythConfig {
-            address: pyth_address,
-            endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
-        };
-
-        let oracles = OraclesCache::new(oracle_lens, Some(pyth.clone()));
+        let account = address!("0x421c4869095B637d59f25b427904D792dcBe0260");
 
         // Fetch an account.
         let account = fetch_account(
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
