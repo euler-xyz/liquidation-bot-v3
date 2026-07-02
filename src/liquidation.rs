@@ -367,12 +367,12 @@ mod test {
     };
 
     use crate::{
-        config::{PythConfig, VaultFilter, load_configuration_file_for_test},
+        config::{VaultFilter, load_configuration_file_for_test},
         lens::fetch_account,
         liquidation::prepare_liquidation,
         oracles::OraclesCache,
         prices::EulerPricingApi,
-        pyth::{DEFAULT_PYTH_ENDPOINT, fetch_pyth_data},
+        pyth::fetch_pyth_data,
         swap::EulerSwapApi,
         vaults::Vaults,
     };
