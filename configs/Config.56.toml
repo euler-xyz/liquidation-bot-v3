@@ -28,4 +28,5 @@ items = [
     "0x5d3b4bcff6a24a20a98070263d03d474586c9b29", # Re7 Labs Cluster - EVK Vault eUSDX-1
     "0xc41f2ba7102e9f9f2d603eb951f955ae205ed272", # Re7 Labs Cluster - EVK Vault eUSD1-2
     "0x69a93dbab609266af96f05658b2e22d020de2e19", # Re7 Labs Cluster - EVK Vault eUSDT-4 
+    "0xc27d44a8aea0cda482600136c0d0876e807f6c1a", # Apostro BSC - USDC
 ]

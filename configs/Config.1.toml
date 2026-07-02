@@ -23,5 +23,9 @@ endpoint = "https://hermes.pyth.network/"
 
 [vault_filter]
 mode = "Blacklist"
-items = ["0xdB6856e8478DB159c383a0c4b274E259AF83cB15"]
+items = [
+    "0xdB6856e8478DB159c383a0c4b274E259AF83cB15",
+    "0xcbc9b61177444a793b85442d3a953b90f6170b7d", # Resolv - USDC
+    "0x3b028b4b6c567ef5f8ca1144da4fbaa0d973f228", # Tulipa Resolv - USDC
+]
 

@@ -24,5 +24,7 @@ mode = "Blacklist"
 items = [
     "0x44812cce64fddc7529dd6d41c9b3e1d0de006d92", # EVK Vault eHONEY-9
     "0xcd70599d3d8d1a6e3e4dd60d494dbf10e9b0f778", # EVK Vault eHONEY-8
+    "0x37dc866cf6fec47dfdc81d4380cf8406d9188929", # EVK Vault eHONEY-10
+    "0xb5faa970c515eea59f1af9f2bbe28564a65f131a", # EVK Vault eHONEY-12
 ]
 

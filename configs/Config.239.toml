@@ -16,3 +16,9 @@ full_resync_and_check_interval_seconds = 3600
 enable_observability_api = true
 
 # This chain does not have a Pyth deployment.
+
+[vault_filter]
+mode = "Blacklist"
+items = [
+    "0xdd6eaef38f94d4724124cec14c819818714537ff", # Edge UltraYield Cluster - USDT
+]
