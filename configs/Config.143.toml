@@ -22,5 +22,6 @@ endpoint = "https://hermes.pyth.network/"
 [vault_filter]
 mode = "Blacklist"
 items = [
-    "0x852e9d248b1a294566737633c2f829ea8257553b" # EVK Vault eUSDC-14
+    "0x75b6c392f778b8bcf9bdb676f8f128b4dd49ac19", # EVK Vault eWMON-12
+    "0x438cedce647491b1d93a73d491ec19a50194c222", # EVK Vault eAUSD-11 
 ]
