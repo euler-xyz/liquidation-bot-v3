@@ -233,7 +233,7 @@ async fn check_address<P: Provider>(provider: &P, address: Address, label: &str)
     Ok(())
 }
 
-pub fn get_config() -> Result<Config> {
+pub fn get_config(config_folder_path: Option<String>) -> Result<Config> {
     // Fetch what chain id we should be loading the config for.
     let chain_id = std::env::var("CHAIN_ID")?;
 
@@ -244,7 +244,11 @@ pub fn get_config() -> Result<Config> {
     };
 
     // The file that will be used as the config file.
-    let config_file = format!("Config.{}.toml", chain_id);
+    let config_file = if let Some(path) = config_folder_path {
+        format!("{}/Config.{}.toml", path, chain_id)
+    } else {
+        format!("Config.{}.toml", chain_id)
+    };
 
     let config: Config = Figment::new()
         .merge(figment::providers::Serialized::from(&rpc, "default"))
@@ -282,20 +286,16 @@ pub fn load_configuration_file_for_test(rpc_url: &str, chain_id: u64) -> anyhow:
         env::set_var("EOA_PRIVATE_KEY", private_key);
     }
 
-    get_config()
+    get_config(Some("./configs/".to_string()))
 }
 
 #[cfg(test)]
 mod test {
-    use std::{env, path::Path};
-
     use crate::config::load_configuration_file_for_test;
 
     #[tokio::test]
     /// Validates the configuration files against public rpcs.
     async fn validate_configuration_files() {
-        env::set_current_dir(Path::new("./configs")).expect("failed to cd into ./configs");
-
         validate_configuration_file("https://eth.blockrazor.xyz", 1).await;
         validate_configuration_file("https://binance-smart-chain-public.nodies.app", 56).await;
         validate_configuration_file("https://unichain-rpc.publicnode.com", 130).await;

@@ -61,7 +61,7 @@ async fn main() {
         .init();
 
     // Load the bot configuration.
-    let config = match get_config() {
+    let config = match get_config(None) {
         Ok(config) => config,
         Err(err) => {
             error!("Could not load the configuration for the bot, due to err: {err}");
@@ -891,17 +891,10 @@ mod test {
         assert!(account.borrows.is_empty());
     }
 
-    #[tokio::test]
     async fn debug_transaction() {
-        let rpc_url = std::env::var("MAINNET_RPC").expect("BERA_RPC must be set");
+        let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let chain_id = 1;
 
-        // Configure tracing.
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
-            .init();
-
-        env::set_current_dir(Path::new("./configs")).expect("failed to cd into ./configs");
         let config = load_configuration_file_for_test(&rpc_url, chain_id).unwrap();
         let violator = address!("0xf7121a3616752e29ced0a04ae5df6d76335ada0d");
 
@@ -1101,6 +1094,12 @@ mod test {
 
     #[tokio::test]
     async fn liquidation_monad() {
+
+        // Configure tracing.
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
+            .init();
+
         // This account is healthy at this block.
         let block = 80320464;
         let violator = address!("0xe9ebd964090e1ccc5a1cc05164c26533d67f7c87");
