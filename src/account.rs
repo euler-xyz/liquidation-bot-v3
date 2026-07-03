@@ -205,29 +205,30 @@ impl Account {
             .iter()
             .map(|a| {
                 // Take into acccount the liquidation LTV.
-                let amount = match borrow.vault.ltvs.get(&a.vault.address) {
+                match borrow.vault.ltvs.get(&a.vault.address) {
                     Some(ltv) => {
                         // Convert the amount into shares.
                         let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(ORACLE_PRICING_UNIT);
 
                         // Apply the liquidation LTV onto the underlying.
-                        amount * ltv.current_liquidation_ltv() / U256::from(10_000)
+                        let amount = amount * ltv.current_liquidation_ltv() / U256::from(10_000);
+
+                        prices.get_quote(
+                            &OracleIdentifier {
+                                base_asset: a.vault.asset,
+                                quote_asset: borrow.vault.unit_of_account,
+                                adapter: borrow .vault.adapter,
+                            },
+                            amount,
+                        )
                     },
                     None => {
                         debug!( controller =? borrow .vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
                         // This asset is not supported by the controller so its value is 0.
-                        U256::ZERO
+                        Ok(U256::ZERO)
                     }
-                };
+                }
 
-                prices.get_quote(
-                    &OracleIdentifier {
-                        base_asset: a.vault.asset,
-                        quote_asset: borrow.vault.unit_of_account,
-                        adapter: borrow .vault.adapter,
-                    },
-                    amount,
-                )
             })
             .collect::<Result<Vec<U256>>>()?
             .iter()
@@ -240,5 +241,295 @@ impl Account {
             borrow_value,
             unit_of_account: borrow.vault.unit_of_account,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{collections::HashMap, sync::Arc};
+
+    use alloy::primitives::{Address, U256};
+
+    use crate::{
+        oracles::{ORACLE_PRICING_UNIT, OraclesCache},
+        types::{
+            Account, Ltv, OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition,
+        },
+    };
+
+    /// ORACLE_PRICING_UNIT as a U256 (1e18). A price equal to this means 1 unit of
+    /// base is worth exactly 1 unit of quote.
+    fn unit() -> U256 {
+        U256::from(ORACLE_PRICING_UNIT)
+    }
+
+    /// Builds an LTV whose `current_liquidation_ltv()` is deterministically
+    /// `liquidation_ltv` (in basis points), independent of the current time.
+    ///
+    /// This works because `calculate_liquidation_ltv` short-circuits and returns
+    /// `liquidation_ltv` whenever `liquidation_ltv >= initial_liquidation_ltv`.
+    fn fixed_ltv(bps: u64) -> Ltv {
+        Ltv::new(
+            Address::random(),
+            U256::from(bps),
+            U256::from(bps), // liquidation_ltv
+            U256::from(bps), // initial_liquidation_ltv == liquidation_ltv => no ramp
+            U256::ZERO,
+            U256::from(1),
+        )
+    }
+
+    fn vault(
+        address: Address,
+        asset: Address,
+        unit_of_account: Address,
+        adapter: Address,
+        shares_to_underlying_ratio: U256,
+        ltvs: HashMap<Address, Ltv>,
+    ) -> Arc<Vault> {
+        Arc::new(Vault {
+            address,
+            asset,
+            unit_of_account,
+            borrow_interest_rate: (),
+            supply_interest_rate: (),
+            shares_to_underlying_ratio,
+            adapter,
+            ltvs,
+        })
+    }
+
+    /// Fixture returning (account, oracle-cache) for a single-collateral,
+    /// single-borrow account.
+    ///
+    /// - `collateral_supported` controls whether the borrow controller lists the
+    ///   collateral vault in its LTVs (bps 8000 = 80%). If false the collateral
+    ///   is worth zero per the health logic.
+    /// - prices for both the borrow and collateral oracles are seeded to `unit()`
+    ///   (1:1), so the quote of an `amount` is just `amount`.
+    /// - `shares_ratio` is the collateral vault's shares->underlying ratio.
+    fn fixture(
+        borrow_amount: U256,
+        collateral_amount: U256,
+        shares_ratio: U256,
+        collateral_supported: bool,
+    ) -> (Account, OraclesCache) {
+        let uoa = Address::random();
+        let adapter = Address::random();
+
+        let borrow_asset = Address::random();
+        let borrow_vault_addr = Address::random();
+        let collateral_asset = Address::random();
+        let collateral_vault_addr = Address::random();
+
+        let mut ltvs = HashMap::new();
+        if collateral_supported {
+            ltvs.insert(collateral_vault_addr, fixed_ltv(8000));
+        }
+
+        let borrow_vault = vault(borrow_vault_addr, borrow_asset, uoa, adapter, unit(), ltvs);
+        let collateral_vault = vault(
+            collateral_vault_addr,
+            collateral_asset,
+            uoa,
+            adapter,
+            shares_ratio,
+            HashMap::new(),
+        );
+
+        let account = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition {
+                amount: borrow_amount,
+                vault: borrow_vault,
+            }],
+            vec![VaultCollateralPosition {
+                amount: collateral_amount,
+                vault: collateral_vault,
+            }],
+        );
+
+        let cache = OraclesCache::new(Address::ZERO, None);
+        cache.insert_price_for_test(
+            OracleIdentifier {
+                base_asset: borrow_asset,
+                quote_asset: uoa,
+                adapter,
+            },
+            unit(),
+        );
+        cache.insert_price_for_test(
+            OracleIdentifier {
+                base_asset: collateral_asset,
+                quote_asset: uoa,
+                adapter,
+            },
+            unit(),
+        );
+
+        (account, cache)
+    }
+
+    #[test]
+    fn unhealthy_when_borrow_exceeds_discounted_collateral() {
+        // 100 borrow. 100 collateral shares at 1:1 ratio => 100 underlying, then
+        // the 80% liquidation LTV discounts it to 80. 100 > 80 => unhealthy.
+        let (account, cache) = fixture(U256::from(100), U256::from(100), unit(), true);
+
+        let solvency = account.calculate_health(&cache).unwrap();
+
+        assert_eq!(solvency.borrow_value, U256::from(100));
+        assert_eq!(solvency.collateral_value, U256::from(80));
+        assert!(solvency.is_unhealthy());
+        assert!(!solvency.is_healthy());
+    }
+
+    #[test]
+    fn healthy_when_discounted_collateral_exceeds_borrow() {
+        // 100 borrow. 200 collateral shares => 200 underlying, discounted 80% => 160.
+        // 100 <= 160 => healthy.
+        let (account, cache) = fixture(U256::from(100), U256::from(200), unit(), true);
+
+        let solvency = account.calculate_health(&cache).unwrap();
+
+        assert_eq!(solvency.borrow_value, U256::from(100));
+        assert_eq!(solvency.collateral_value, U256::from(160));
+        assert!(solvency.is_healthy());
+    }
+
+    #[test]
+    fn applies_shares_to_underlying_ratio() {
+        // A 2e18 ratio means each share is worth 2 underlying. 100 shares => 200
+        // underlying, discounted 80% => 160.
+        let (account, cache) = fixture(
+            U256::from(100),
+            U256::from(100),
+            unit() * U256::from(2),
+            true,
+        );
+
+        let solvency = account.calculate_health(&cache).unwrap();
+
+        assert_eq!(solvency.collateral_value, U256::from(160));
+    }
+
+    #[test]
+    fn collateral_not_supported_by_controller_is_worthless() {
+        // The controller does not list the collateral vault, so per the health
+        // logic that collateral contributes zero value.
+        let (account, cache) = fixture(U256::from(100), U256::from(100), unit(), false);
+
+        let solvency = account.calculate_health(&cache).unwrap();
+
+        assert_eq!(solvency.collateral_value, U256::ZERO);
+        assert!(solvency.is_unhealthy());
+    }
+
+    #[test]
+    fn errors_when_account_has_no_borrow() {
+        let account = Account::new(
+            Address::random(),
+            vec![],
+            vec![VaultCollateralPosition::generate_random()],
+        );
+        let cache = OraclesCache::new(Address::ZERO, None);
+
+        assert!(account.calculate_health(&cache).is_err());
+    }
+
+    #[test]
+    fn errors_when_a_required_price_is_missing() {
+        // Same fixture, but drop one of the prices by using a fresh empty cache.
+        let (account, _) = fixture(U256::from(100), U256::from(100), unit(), true);
+        let empty = OraclesCache::new(Address::ZERO, None);
+
+        assert!(account.calculate_health(&empty).is_err());
+    }
+
+    #[test]
+    fn dependent_on_lists_each_collateral_plus_the_debt_oracle() {
+        let uoa = Address::random();
+        let adapter = Address::random();
+        let debt_asset = Address::random();
+        let collateral_a = Address::random();
+        let collateral_b = Address::random();
+
+        let account = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition {
+                amount: U256::from(1),
+                vault: vault(
+                    Address::random(),
+                    debt_asset,
+                    uoa,
+                    adapter,
+                    unit(),
+                    HashMap::new(),
+                ),
+            }],
+            vec![
+                VaultCollateralPosition {
+                    amount: U256::from(1),
+                    vault: vault(
+                        Address::random(),
+                        collateral_a,
+                        Address::random(), // collateral's own uoa should be ignored
+                        Address::random(), // collateral's own adapter should be ignored
+                        unit(),
+                        HashMap::new(),
+                    ),
+                },
+                VaultCollateralPosition {
+                    amount: U256::from(1),
+                    vault: vault(
+                        Address::random(),
+                        collateral_b,
+                        Address::random(),
+                        Address::random(),
+                        unit(),
+                        HashMap::new(),
+                    ),
+                },
+            ],
+        );
+
+        let deps = account.dependent_on();
+
+        // One oracle per collateral, plus the debt oracle.
+        assert_eq!(deps.len(), 3);
+
+        // Collateral oracles must be quoted against the DEBT's unit of account and
+        // adapter, not the collateral vault's own.
+        assert!(deps.contains(&OracleIdentifier {
+            base_asset: collateral_a,
+            quote_asset: uoa,
+            adapter,
+        }));
+        assert!(deps.contains(&OracleIdentifier {
+            base_asset: collateral_b,
+            quote_asset: uoa,
+            adapter,
+        }));
+
+        // The debt oracle is the last entry.
+        assert_eq!(
+            deps.last().unwrap(),
+            &OracleIdentifier {
+                base_asset: debt_asset,
+                quote_asset: uoa,
+                adapter,
+            }
+        );
+    }
+
+    #[test]
+    fn dependent_on_is_empty_without_a_borrow() {
+        let account = Account::new(
+            Address::random(),
+            vec![],
+            vec![VaultCollateralPosition::generate_random()],
+        );
+
+        assert!(account.dependent_on().is_empty());
     }
 }

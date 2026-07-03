@@ -140,6 +140,19 @@ pub struct MulticallItem {
 //     pub provider_name: String,
 // }
 
+/// Calculates the profit (in collateral-asset units) of a liquidation where the
+/// seized collateral and the repaid debt are the same asset, so no swap is needed.
+///
+/// Returns `None` when the seized collateral is not enough to cover the repayment,
+/// otherwise returns the surplus collateral.
+fn same_asset_profit(seized_collateral: U256, repay_amount: U256) -> Option<U256> {
+    if seized_collateral < repay_amount {
+        return None;
+    }
+
+    Some(seized_collateral - repay_amount)
+}
+
 pub trait SwapQuoteProvider {
     #![allow(async_fn_in_trait)]
     async fn find_swap(
@@ -297,12 +310,13 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         // We might want to move this somewhere else.
         if liq.borrow().vault.asset == liq.collateral().vault.asset {
             // The amount we need to repay is more than the amount of assets.
-            if liq.seized_collateral_amount() < liq.repay_amount() {
-                return Ok(None);
-            }
+            let profit = match same_asset_profit(liq.seized_collateral_amount(), liq.repay_amount())
+            {
+                Some(profit) => profit,
+                None => return Ok(None),
+            };
 
-            // Calculate the profitis as well as in the native asset.
-            let profit = liq.seized_collateral_amount() - liq.repay_amount();
+            // Calculate the profit as well as in the native asset.
             let profit_in_native = self
                 .pricing
                 .quote(
@@ -458,5 +472,181 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             Some((err, _)) => Err(err),
             None => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{collections::HashMap, sync::Arc};
+
+    use alloy::{
+        primitives::{Address, U256, bytes},
+        providers::{Provider, ProviderBuilder},
+    };
+    use anyhow::Result;
+
+    use super::{EulerSwapApi, SwapApiResponse, SwapQuote, SwapQuoteProvider, same_asset_profit};
+    use crate::{
+        liquidation::PreparedLiquidation,
+        prices::PriceAsset,
+        types::{Account, Vault, VaultBorrowPosition, VaultCollateralPosition},
+    };
+
+    // ── same_asset_profit ───────────────────────────────────────────────────
+
+    #[test]
+    fn same_asset_profit_returns_surplus() {
+        assert_eq!(
+            same_asset_profit(U256::from(150), U256::from(100)),
+            Some(U256::from(50))
+        );
+    }
+
+    #[test]
+    fn same_asset_profit_break_even_is_zero_not_none() {
+        // Seizing exactly the repay amount is treated as a (zero) profit, not as
+        // "no path". This matters because the caller proceeds with the liquidation.
+        assert_eq!(
+            same_asset_profit(U256::from(100), U256::from(100)),
+            Some(U256::ZERO)
+        );
+    }
+
+    #[test]
+    fn same_asset_profit_shortfall_is_none() {
+        assert_eq!(same_asset_profit(U256::from(99), U256::from(100)), None);
+    }
+
+    // ── find_swap: same-asset branch ────────────────────────────────────────
+
+    /// A pricing stub that reports `input_amount * multiplier` as the output,
+    /// letting tests distinguish the native-denominated profit from the raw
+    /// asset profit without any network access.
+    struct StubPricing {
+        multiplier: U256,
+    }
+
+    impl PriceAsset for StubPricing {
+        async fn quote(
+            &self,
+            _input_asset: Address,
+            input_amount: U256,
+            _output_asset: Address,
+        ) -> Result<U256> {
+            Ok(input_amount * self.multiplier)
+        }
+    }
+
+    fn dummy_provider() -> alloy::providers::DynProvider {
+        // Never actually dialed: the same-asset branch does no RPC.
+        ProviderBuilder::new()
+            .connect_http("http://127.0.0.1:9".parse().unwrap())
+            .erased()
+    }
+
+    fn api(multiplier: U256) -> EulerSwapApi<StubPricing> {
+        EulerSwapApi::new(
+            "http://127.0.0.1:9/".parse().unwrap(),
+            dummy_provider(),
+            1,
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            "0.1",
+            StubPricing { multiplier },
+        )
+    }
+
+    fn same_asset_liquidation(asset: Address, repay: U256, seized: U256) -> PreparedLiquidation {
+        let make_vault = || {
+            Arc::new(Vault {
+                address: Address::random(),
+                asset,
+                unit_of_account: Address::random(),
+                borrow_interest_rate: (),
+                supply_interest_rate: (),
+                shares_to_underlying_ratio: U256::from(1),
+                adapter: Address::random(),
+                ltvs: HashMap::new(),
+            })
+        };
+
+        let borrow = VaultBorrowPosition {
+            amount: repay,
+            vault: make_vault(),
+        };
+        let collateral = VaultCollateralPosition {
+            amount: seized,
+            vault: make_vault(),
+        };
+
+        PreparedLiquidation::new_for_test(
+            Account::new(
+                Address::random(),
+                vec![borrow.clone()],
+                vec![collateral.clone()],
+            ),
+            borrow,
+            collateral,
+            repay,
+            seized,
+            Address::random(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn find_swap_same_asset_sets_profit() {
+        let asset = Address::random();
+        // seized 150, repay 100 => 50 profit in asset. Pricing doubles it => 100 native.
+        let liq = same_asset_liquidation(asset, U256::from(100), U256::from(150));
+
+        let result = api(U256::from(2)).find_swap(liq).await.unwrap();
+        let prepared = result.expect("expected a prepared liquidation");
+
+        assert_eq!(prepared.profit_in_asset(), U256::from(50));
+        assert_eq!(prepared.profit(), U256::from(100));
+    }
+
+    #[tokio::test]
+    async fn find_swap_same_asset_shortfall_returns_none() {
+        let asset = Address::random();
+        // seized 100 < repay 150 => no profitable liquidation.
+        let liq = same_asset_liquidation(asset, U256::from(150), U256::from(100));
+
+        let result = api(U256::from(2)).find_swap(liq).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── response deserialization ────────────────────────────────────────────
+
+    #[test]
+    fn deserializes_successful_swap_quotes() {
+        let body = r#"{
+            "success": true,
+            "data": [
+                { "amountOut": "1000", "swap": { "multicallItems": [ { "data": "0x1234" } ] } }
+            ]
+        }"#;
+
+        let response: SwapApiResponse = serde_json::from_str(body).unwrap();
+        assert!(response.success);
+
+        let quotes: Vec<SwapQuote> = serde_json::from_value(response.data.unwrap()).unwrap();
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].amount_out, U256::from(1000));
+        assert_eq!(quotes[0].swap.multicall_items.len(), 1);
+        assert_eq!(quotes[0].swap.multicall_items[0].data, bytes!("0x1234"));
+    }
+
+    #[test]
+    fn deserializes_failure_response_with_message() {
+        let body = r#"{ "success": false, "message": "Swap quote not found" }"#;
+
+        let response: SwapApiResponse = serde_json::from_str(body).unwrap();
+        assert!(!response.success);
+        assert_eq!(response.message.as_deref(), Some("Swap quote not found"));
+        assert!(response.data.is_none());
     }
 }

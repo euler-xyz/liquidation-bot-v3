@@ -251,6 +251,19 @@ impl OraclesCache {
             })
             .collect()
     }
+
+    /// Test-only helper to seed the price cache without hitting the chain.
+    #[cfg(test)]
+    pub(crate) fn insert_price_for_test(&self, id: OracleIdentifier, price: U256) {
+        self.prices.insert(
+            id,
+            OracleOutput {
+                price,
+                last_polled_at: Utc::now(),
+                last_changed_at: Utc::now(),
+            },
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -611,5 +624,77 @@ mod test {
             .fetch_latest_price(&provider, oracle.clone())
             .await
             .unwrap();
+    }
+
+    use crate::oracles::ORACLE_PRICING_UNIT;
+    use alloy::primitives::U256;
+
+    fn unit() -> U256 {
+        U256::from(ORACLE_PRICING_UNIT)
+    }
+
+    fn random_id() -> OracleIdentifier {
+        OracleIdentifier {
+            base_asset: Address::random(),
+            quote_asset: Address::random(),
+            adapter: Address::random(),
+        }
+    }
+
+    #[test]
+    fn get_quote_scales_by_price() {
+        let cache = OraclesCache::new(Address::ZERO, None);
+        let id = random_id();
+
+        // Price of 2 (in 1e18 fixed point) means base is worth 2x quote.
+        cache.insert_price_for_test(id.clone(), unit() * U256::from(2));
+
+        // 5 * 2 = 10.
+        assert_eq!(cache.get_quote(&id, U256::from(5)).unwrap(), U256::from(10));
+    }
+
+    #[test]
+    fn get_quote_with_unit_price_is_identity() {
+        let cache = OraclesCache::new(Address::ZERO, None);
+        let id = random_id();
+        cache.insert_price_for_test(id.clone(), unit());
+
+        assert_eq!(
+            cache.get_quote(&id, U256::from(12345)).unwrap(),
+            U256::from(12345)
+        );
+    }
+
+    #[test]
+    fn get_quote_rounds_up() {
+        let cache = OraclesCache::new(Address::ZERO, None);
+        let id = random_id();
+
+        // A price of 1 wei with amount 1 gives 1 / 1e18, which is a tiny non-zero
+        // fraction. div_ceil must round this up to 1 rather than truncating to 0.
+        cache.insert_price_for_test(id.clone(), U256::from(1));
+
+        assert_eq!(cache.get_quote(&id, U256::from(1)).unwrap(), U256::from(1));
+    }
+
+    #[test]
+    fn get_quote_of_zero_amount_is_zero() {
+        let cache = OraclesCache::new(Address::ZERO, None);
+        let id = random_id();
+        cache.insert_price_for_test(id.clone(), unit() * U256::from(7));
+
+        assert_eq!(cache.get_quote(&id, U256::ZERO).unwrap(), U256::ZERO);
+    }
+
+    #[test]
+    fn get_quote_missing_price_errors_and_tracks_oracle() {
+        let cache = OraclesCache::new(Address::ZERO, None);
+        let id = random_id();
+
+        // No price seeded: the quote must fail...
+        assert!(cache.get_quote(&id, U256::from(1)).is_err());
+
+        // ...and the oracle should now be tracked so a price gets fetched later.
+        assert!(cache.active_oracles().contains(&id));
     }
 }
