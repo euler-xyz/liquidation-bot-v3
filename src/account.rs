@@ -7,7 +7,7 @@ use alloy::{
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use tokio::{sync::mpsc::Sender, time};
 use tracing::{debug, error, info};
 
@@ -35,6 +35,19 @@ sol! {
         /// @param account The account for which the status check is performed.
         /// @param controller The controller performing the status check.
         event AccountStatusCheck(address indexed account, address indexed controller);
+
+        /// @notice Emitted when the controller status is changed for an account.
+        /// @param account The account for which the controller status is changed.
+        /// @param controller The address of the controller.
+        /// @param enabled True if the controller is enabled, false otherwise.
+        event ControllerStatus(address indexed account, address indexed controller, bool enabled);
+
+
+        /// @notice Emitted when the collateral status is changed for an account.
+        /// @param account The account for which the collateral status is changed.
+        /// @param collateral The address of the collateral.
+        /// @param enabled True if the collateral is enabled, false otherwise.
+        event CollateralStatus(address indexed account, address indexed collateral, bool enabled);
     }
 
     #[sol(rpc)]
@@ -91,8 +104,7 @@ pub async fn watch_chain_for_accounts(
             let filter = Filter::new()
                 .address(evc)
                 .from_block(from_block)
-                .to_block(latest)
-                .event_signature(Events::AccountStatusCheck::SIGNATURE_HASH);
+                .to_block(latest);
 
             let logs: Vec<Log> = match provider.get_logs(&filter).await {
                 Ok(logs) => logs,
@@ -106,24 +118,40 @@ pub async fn watch_chain_for_accounts(
                 }
             };
 
+            let mut users = HashSet::new();
             for log in &logs {
-                match Events::AccountStatusCheck::decode_log(&log.inner) {
-                    Ok(decoded) => {
-                        let block = log.block_number.unwrap_or_default();
-                        info!(
-                            "Found account event for {} at block {}",
-                            decoded.account, block
-                        );
-
-                        // Send the update over the channel.
-                        if let Err(err) = account_update_channel.send(decoded.account).await {
-                            error!(
-                                "Issue when attempting to send update over accounts channel, it was likely dropped, err: {:?}",
-                                err
-                            );
-                        }
+                // Decode any of these events, then extract the account from it and add it to the
+                // set.
+                match log.topic0() {
+                    Some(&Events::AccountStatusCheck::SIGNATURE_HASH) => {
+                        match Events::AccountStatusCheck::decode_log(&log.inner) {
+                            Ok(decoded) => users.insert(decoded.account),
+                            Err(_) => continue,
+                        };
                     }
-                    Err(e) => error!("Decode error: {:?}", e),
+                    Some(&Events::ControllerStatus::SIGNATURE_HASH) => {
+                        match Events::ControllerStatus::decode_log(&log.inner) {
+                            Ok(decoded) => users.insert(decoded.account),
+                            Err(_) => continue,
+                        };
+                    }
+                    Some(&Events::CollateralStatus::SIGNATURE_HASH) => {
+                        match Events::CollateralStatus::decode_log(&log.inner) {
+                            Ok(decoded) => users.insert(decoded.account),
+                            Err(_) => continue,
+                        };
+                    }
+                    _ => {}
+                };
+            }
+
+            // Send the updates over the channel.
+            for user in users.iter() {
+                if let Err(err) = account_update_channel.send(*user).await {
+                    error!(
+                        "Issue when attempting to send update over accounts channel, it was likely dropped, err: {:?}",
+                        err
+                    );
                 }
             }
 
