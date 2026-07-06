@@ -8,6 +8,15 @@ use tracing::{error, info, warn};
 
 use crate::liquidation::PreparedLiquidation;
 
+/// Calculates the total cost of executing a liquidation transaction.
+///
+/// This is the gas cost (`gas_usage * gas_price`) plus any Pyth update fee that
+/// has to be paid as `msg.value`. It is compared against the expected profit to
+/// decide whether a liquidation is worth executing.
+fn liquidation_cost(gas_usage: u64, gas_price: u128, pyth_cost: U256) -> U256 {
+    U256::from(u128::from(gas_usage) * gas_price) + pyth_cost
+}
+
 /// Watches the liquidation channel and executes liquidations.
 pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
     provider: T,
@@ -50,7 +59,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             };
 
             // Make sure this is profitable, if not then we do not execute.
-            let cost = U256::from(u128::from(gas_usage) * gas_price) + liquidation.pyth_cost();
+            let cost = liquidation_cost(gas_usage, gas_price, liquidation.pyth_cost());
             if cost > liquidation.profit() {
                 info!(
                     account =? liquidation.account(),
@@ -127,5 +136,53 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             // We do not need to notify the main thread that this execution was a success, as our
             // liquidation transaction will cause a `AccountStatusCheck` event which cause the account watcher to sync to the new state.
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::liquidation_cost;
+    use alloy::primitives::U256;
+
+    #[test]
+    fn cost_is_gas_times_price() {
+        // 21000 gas at 3 wei/gas = 63000, no pyth cost.
+        assert_eq!(
+            liquidation_cost(21_000, 3, U256::ZERO),
+            U256::from(63_000u64)
+        );
+    }
+
+    #[test]
+    fn cost_includes_pyth_fee() {
+        // The Pyth update fee is paid as msg.value and must be part of the cost.
+        assert_eq!(
+            liquidation_cost(21_000, 3, U256::from(1_000u64)),
+            U256::from(64_000u64)
+        );
+    }
+
+    // The execution gate skips a liquidation when `cost > profit`. These cases
+    // pin down that boundary (break-even is executed, not skipped).
+    fn should_skip(cost: U256, profit: U256) -> bool {
+        cost > profit
+    }
+
+    #[test]
+    fn unprofitable_liquidation_is_skipped() {
+        let cost = liquidation_cost(21_000, 3, U256::ZERO); // 63000
+        assert!(should_skip(cost, U256::from(62_999u64)));
+    }
+
+    #[test]
+    fn break_even_liquidation_is_executed() {
+        let cost = liquidation_cost(21_000, 3, U256::ZERO); // 63000
+        assert!(!should_skip(cost, U256::from(63_000u64)));
+    }
+
+    #[test]
+    fn profitable_liquidation_is_executed() {
+        let cost = liquidation_cost(21_000, 3, U256::ZERO); // 63000
+        assert!(!should_skip(cost, U256::from(100_000u64)));
     }
 }

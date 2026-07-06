@@ -247,6 +247,33 @@ pub async fn prepare_liquidation(
 }
 
 impl PreparedLiquidation {
+    /// Test-only constructor. Profit fields default to zero and can be set with
+    /// [`PreparedLiquidation::with_profit`]; swap data with
+    /// [`PreparedLiquidation::with_swap_data`].
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        account: Account,
+        borrow: VaultBorrowPosition,
+        collateral: VaultCollateralPosition,
+        repay_amount: U256,
+        seized_collateral_amount: U256,
+        liquidator: Address,
+        pyth: Option<PythFeedInput>,
+    ) -> Self {
+        PreparedLiquidation {
+            account,
+            borrow,
+            collateral,
+            repay_amount,
+            seized_collateral_amount,
+            pyth,
+            swap: None,
+            liquidator,
+            profit: U256::ZERO,
+            profit_in_asset: U256::ZERO,
+        }
+    }
+
     /// Builds a transaction from a preparedLiquidation.
     pub fn into_transaction(self, receiver: Address) -> TransactionRequest {
         let params = LiquidationParams {
@@ -566,5 +593,101 @@ mod test {
             .await;
 
         dbg!(account.calculate_health(&oracles).unwrap().is_unhealthy());
+    }
+}
+
+#[cfg(test)]
+mod into_transaction_test {
+    use std::{collections::HashMap, sync::Arc};
+
+    use alloy::{
+        primitives::{Address, Bytes, TxKind, U256},
+        sol_types::SolCall,
+    };
+
+    use super::{Liquidator, PreparedLiquidation};
+    use crate::{
+        pyth::PythFeedInput,
+        types::{Account, Vault, VaultBorrowPosition, VaultCollateralPosition},
+    };
+
+    fn liquidation(pyth: Option<PythFeedInput>) -> (PreparedLiquidation, Address) {
+        let liquidator = Address::random();
+        let make_vault = || {
+            Arc::new(Vault {
+                address: Address::random(),
+                asset: Address::random(),
+                unit_of_account: Address::random(),
+                borrow_interest_rate: (),
+                supply_interest_rate: (),
+                shares_to_underlying_ratio: U256::from(1),
+                adapter: Address::random(),
+                ltvs: HashMap::new(),
+            })
+        };
+
+        let borrow = VaultBorrowPosition {
+            amount: U256::from(100),
+            vault: make_vault(),
+        };
+        let collateral = VaultCollateralPosition {
+            amount: U256::from(100),
+            vault: make_vault(),
+        };
+
+        let liq = PreparedLiquidation::new_for_test(
+            Account::new(Address::random(), vec![borrow.clone()], vec![collateral.clone()]),
+            borrow,
+            collateral,
+            U256::from(100),
+            U256::from(150),
+            liquidator,
+            pyth,
+        );
+
+        (liq, liquidator)
+    }
+
+    #[test]
+    fn non_pyth_encodes_plain_liquidation_with_zero_value() {
+        let (liq, liquidator) = liquidation(None);
+        let receiver = Address::random();
+
+        let tx = liq.into_transaction(receiver);
+
+        // Calls the liquidator contract.
+        assert_eq!(tx.to, Some(TxKind::Call(liquidator)));
+        // No msg.value when there's no Pyth fee.
+        assert_eq!(tx.value, Some(U256::ZERO));
+
+        // Selector must be the plain single-collateral liquidation.
+        let input = tx.input.input.unwrap();
+        assert_eq!(
+            &input[..4],
+            Liquidator::liquidateSingleCollateralCall::SELECTOR.as_slice()
+        );
+    }
+
+    #[test]
+    fn pyth_encodes_pyth_liquidation_and_forwards_cost_as_value() {
+        let cost = U256::from(4_242u64);
+        let (liq, liquidator) = liquidation(Some(PythFeedInput {
+            data: vec![Bytes::from_static(&[0xAB, 0xCD])],
+            cost,
+        }));
+        let receiver = Address::random();
+
+        let tx = liq.into_transaction(receiver);
+
+        assert_eq!(tx.to, Some(TxKind::Call(liquidator)));
+        // The Pyth update fee must be forwarded as msg.value.
+        assert_eq!(tx.value, Some(cost));
+
+        // Selector must be the Pyth variant.
+        let input = tx.input.input.unwrap();
+        assert_eq!(
+            &input[..4],
+            Liquidator::liquidateSingleCollateralWithPythOracleCall::SELECTOR.as_slice()
+        );
     }
 }
