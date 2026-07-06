@@ -272,6 +272,108 @@ impl Account {
     }
 }
 
+/// Tests that `watch_chain_for_accounts` actually catches each of the events it
+/// decodes. Each test forks mainnet at a block where a specific event was
+/// emitted by the EVC, runs the watcher over exactly that block, and asserts
+/// that the account carried by the event arrives on the update channel.
+#[cfg(test)]
+mod watch_test {
+    use super::*;
+    use alloy::{node_bindings::Anvil, primitives::address, providers::ProviderBuilder};
+    use std::collections::HashSet;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    /// The mainnet EVC.
+    const EVC: Address = address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383");
+
+    /// Forks mainnet at `block`, runs `watch_chain_for_accounts` starting from
+    /// that block, and returns every account emitted on the channel.
+    ///
+    /// The watcher loops forever with a 15s sleep between passes, but the first
+    /// pass runs immediately and processes the `[block, latest]` range — where
+    /// `latest` is the fork block itself, so exactly `block` is queried. We run
+    /// it on a background task, drain everything it emits from that first pass,
+    /// then abort it.
+    async fn accounts_caught_at_block(block: u64) -> HashSet<Address> {
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        let (tx, mut rx) = mpsc::channel::<Address>(100);
+
+        let handle =
+            tokio::spawn(async move { watch_chain_for_accounts(provider, EVC, tx, block).await });
+
+        let mut caught = HashSet::new();
+
+        // The first message may take a while (fork spin-up + the log query). Once
+        // it lands, the remaining accounts from the same pass are emitted
+        // back-to-back, so a short follow-up timeout is enough to drain them.
+        if let Ok(Some(first)) = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await {
+            caught.insert(first);
+            while let Ok(Some(account)) =
+                tokio::time::timeout(Duration::from_secs(2), rx.recv()).await
+            {
+                caught.insert(account);
+            }
+        }
+
+        handle.abort();
+        caught
+    }
+
+    /// `AccountStatusCheck(address indexed account, address indexed controller)`
+    /// https://etherscan.io/block/25472337
+    #[tokio::test]
+    async fn catches_account_status_check() {
+        let expected = address!("0x0e0c281ff05D34729Cd764DcfC4Fa999b720407c");
+
+        let caught = accounts_caught_at_block(25472337).await;
+
+        assert!(
+            caught.contains(&expected),
+            "AccountStatusCheck account {expected} was not caught; got {caught:?}"
+        );
+    }
+
+    /// `ControllerStatus(address indexed account, address indexed controller, bool enabled)`
+    #[tokio::test]
+    async fn catches_controller_status() {
+        let expected = address!("0x8714D57fBBDBd202B10CaFDF562996a2ED961e10");
+        let block = 25471918;
+
+        let caught = accounts_caught_at_block(block).await;
+
+        assert!(
+            caught.contains(&expected),
+            "ControllerStatus account {expected} was not caught; got {caught:?}"
+        );
+    }
+
+    /// `CollateralStatus(address indexed account, address indexed collateral, bool enabled)`
+    #[tokio::test]
+    async fn catches_collateral_status() {
+        let expected = address!("0x006D9F269695Ad9EB8f727f042EE380684332914");
+        let block = 25466477;
+
+        let caught = accounts_caught_at_block(block).await;
+
+        assert!(
+            caught.contains(&expected),
+            "CollateralStatus account {expected} was not caught; got {caught:?}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, sync::Arc};
