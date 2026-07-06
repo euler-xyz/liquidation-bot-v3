@@ -14,16 +14,6 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release
 
-# ---- Foundry Stage (download prebuilt binaries) ----
-FROM debian:bookworm-slim AS foundry
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git \
-    && rm -rf /var/lib/apt/lists/*
-# Pin a release for reproducibility — bump as needed
-ARG FOUNDRY_VERSION=stable
-RUN curl -L https://foundry.paradigm.xyz | bash \
-    && /root/.foundry/bin/foundryup --install ${FOUNDRY_VERSION}
-
 # ---- Runtime Stage ----
 FROM debian:bookworm-slim
 
@@ -43,12 +33,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Foundry binaries from the foundry stage
-COPY --from=foundry /root/.foundry/bin/forge /usr/local/bin/forge
-COPY --from=foundry /root/.foundry/bin/cast /usr/local/bin/cast
-COPY --from=foundry /root/.foundry/bin/anvil /usr/local/bin/anvil
-COPY --from=foundry /root/.foundry/bin/chisel /usr/local/bin/chisel
-
 # Copy the compiled binary from the builder
 COPY --from=builder /app/target/release/liquidation-bot-v3 /usr/local/bin/liquidation-bot-v3
 COPY --from=builder /app/configs/ ./
@@ -61,4 +45,3 @@ USER appuser
 
 ENTRYPOINT ["doppler", "run", "--"]
 CMD ["liquidation-bot-v3"]
-
