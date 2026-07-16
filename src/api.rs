@@ -18,7 +18,10 @@ use crate::{
 pub struct BotState {
     pub accounts: Arc<AccountsTracker>,
     pub oracles: OraclesCache,
-    pub state: tokio::sync::watch::Receiver<BotHealth>,
+    pub state: tokio::sync::watch::Receiver<Heartbeat>,
+    /// How long without a heartbeat from the main loop before we consider it stalled and report
+    /// the bot as unhealthy.
+    pub stale_after: std::time::Duration,
 }
 
 pub async fn serve(state: BotState) {
@@ -68,8 +71,57 @@ pub enum BotHealth {
     Error(String),
 }
 
-async fn health(State(state): State<BotState>) -> (StatusCode, Json<BotHealth>) {
-    (StatusCode::OK, Json(state.state.borrow().clone()))
+/// A heartbeat from the main loop: the outcome of its most recent resync pass and when it was
+/// reported. The main loop sends one of these on every resync tick (success or failure), so a
+/// heartbeat that stops arriving means the loop itself has stalled — even if the last status it
+/// managed to send was `Healthy`.
+#[derive(Clone)]
+pub struct Heartbeat {
+    pub status: BotHealth,
+    pub beat_at: std::time::Instant,
+}
+
+impl Heartbeat {
+    pub fn now(status: BotHealth) -> Self {
+        Self {
+            status,
+            beat_at: std::time::Instant::now(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: BotHealth,
+    seconds_since_last_heartbeat: u64,
+}
+
+async fn health(State(state): State<BotState>) -> (StatusCode, Json<HealthResponse>) {
+    let heartbeat = state.state.borrow().clone();
+    let elapsed = heartbeat.beat_at.elapsed();
+
+    // If the main loop has not reported in for too long it is stalled, report the bot as
+    // unhealthy regardless of what the last status it sent was.
+    if elapsed > state.stale_after {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: BotHealth::Error(format!(
+                    "Main loop heartbeat is stale, last heard from it {}s ago",
+                    elapsed.as_secs()
+                )),
+                seconds_since_last_heartbeat: elapsed.as_secs(),
+            }),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(HealthResponse {
+            status: heartbeat.status,
+            seconds_since_last_heartbeat: elapsed.as_secs(),
+        }),
+    )
 }
 
 #[derive(Serialize)]

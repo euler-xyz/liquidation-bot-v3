@@ -8,7 +8,7 @@ use alloy::{
 use anyhow::{Result, bail};
 use serde::Serialize;
 use std::{collections::HashSet, sync::Arc};
-use tokio::{sync::mpsc::Sender, time};
+use tokio::{sync::broadcast::Sender, time};
 use tracing::{debug, error, info};
 
 use crate::{
@@ -145,11 +145,14 @@ pub async fn watch_chain_for_accounts(
                 };
             }
 
-            // Send the updates over the channel.
+            // Send the updates over the channel. A broadcast send never blocks: if the buffer
+            // is full the oldest event is overwritten (and reconciled by the next full resync),
+            // so a stalled consumer can never stall this watcher. It only errors when there is
+            // no receiver at all.
             for user in users.iter() {
-                if let Err(err) = account_update_channel.send(*user).await {
+                if let Err(err) = account_update_channel.send(*user) {
                     error!(
-                        "Issue when attempting to send update over accounts channel, it was likely dropped, err: {:?}",
+                        "Issue when attempting to send update over accounts channel, the receiver was likely dropped, err: {:?}",
                         err
                     );
                 }
@@ -282,7 +285,7 @@ mod watch_test {
     use alloy::{node_bindings::Anvil, primitives::address, providers::ProviderBuilder};
     use std::collections::HashSet;
     use std::time::Duration;
-    use tokio::sync::mpsc;
+    use tokio::sync::broadcast;
 
     /// The mainnet EVC.
     const EVC: Address = address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383");
@@ -308,7 +311,7 @@ mod watch_test {
             .connect_http(network.endpoint_url())
             .erased();
 
-        let (tx, mut rx) = mpsc::channel::<Address>(100);
+        let (tx, mut rx) = broadcast::channel::<Address>(512);
 
         let handle =
             tokio::spawn(async move { watch_chain_for_accounts(provider, EVC, tx, block).await });
@@ -318,9 +321,9 @@ mod watch_test {
         // The first message may take a while (fork spin-up + the log query). Once
         // it lands, the remaining accounts from the same pass are emitted
         // back-to-back, so a short follow-up timeout is enough to drain them.
-        if let Ok(Some(first)) = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await {
+        if let Ok(Ok(first)) = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await {
             caught.insert(first);
-            while let Ok(Some(account)) =
+            while let Ok(Ok(account)) =
                 tokio::time::timeout(Duration::from_secs(2), rx.recv()).await
             {
                 caught.insert(account);

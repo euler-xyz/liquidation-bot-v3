@@ -3,10 +3,17 @@ use alloy::{
     primitives::{Address, U256},
     providers::{Provider, WalletProvider},
 };
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tracing::{error, info, warn};
 
 use crate::liquidation::PreparedLiquidation;
+
+/// How long we wait for a liquidation transaction to be included before giving up on it.
+///
+/// Without this a transaction that never gets mined (underpriced gas, nonce gap, dropped from the
+/// mempool) parks this queue forever, which backpressures the liquidation channel and eventually
+/// stalls the main loop.
+const RECEIPT_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
 
 /// Calculates the total cost of executing a liquidation transaction.
 ///
@@ -24,7 +31,8 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
     profit_receiver: Address,
 ) {
     loop {
-        if let Some(liquidation) = queue.recv().await {
+        match queue.recv().await {
+        Ok(liquidation) => {
             info!(
                 account =? liquidation.account(),
                 "received request to liquidate account {}",
@@ -94,7 +102,24 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             // NOTE: We do not wait for any extra confirmations as there is essentially no risk
             // of a re-org.
             let tx = match provider.send_transaction(tx).await {
-                Ok(tx) => tx.get_receipt().await,
+                Ok(pending) => {
+                    let tx_hash = *pending.tx_hash();
+
+                    // Bound how long we wait for inclusion so a stuck transaction cannot park
+                    // this queue (and, through channel backpressure, the main loop) forever.
+                    match tokio::time::timeout(RECEIPT_TIMEOUT, pending.get_receipt()).await {
+                        Ok(receipt) => receipt,
+                        Err(_) => {
+                            error!(
+                                account =? liquidation.account(),
+                                "Timed out after {:?} waiting for receipt of liquidation transaction {}, giving up on it so the queue keeps moving.",
+                                RECEIPT_TIMEOUT,
+                                tx_hash
+                            );
+                            continue;
+                        }
+                    }
+                }
                 Err(err) => {
                     error!(
                         account =? liquidation.account(),
@@ -135,6 +160,17 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
 
             // We do not need to notify the main thread that this execution was a success, as our
             // liquidation transaction will cause a `AccountStatusCheck` event which cause the account watcher to sync to the new state.
+        }
+        // We fell behind and the channel dropped the oldest queued liquidations. That is fine:
+        // the oldest ones are the least valuable (prices have moved on), and any account that
+        // is still unhealthy will be re-queued on the next resync or oracle update.
+        Err(RecvError::Lagged(n)) => {
+            warn!("Liquidation executor fell behind, {n} stale liquidations were dropped.");
+        }
+        Err(RecvError::Closed) => {
+            error!("Liquidation channel closed, stopping the liquidation executor.");
+            return;
+        }
         }
     }
 }
