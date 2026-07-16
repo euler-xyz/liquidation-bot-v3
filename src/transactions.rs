@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256},
     providers::{Provider, WalletProvider},
 };
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tracing::{error, info, warn};
 
 use crate::liquidation::PreparedLiquidation;
@@ -31,7 +31,8 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
     profit_receiver: Address,
 ) {
     loop {
-        if let Some(liquidation) = queue.recv().await {
+        match queue.recv().await {
+        Ok(liquidation) => {
             info!(
                 account =? liquidation.account(),
                 "received request to liquidate account {}",
@@ -159,6 +160,17 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
 
             // We do not need to notify the main thread that this execution was a success, as our
             // liquidation transaction will cause a `AccountStatusCheck` event which cause the account watcher to sync to the new state.
+        }
+        // We fell behind and the channel dropped the oldest queued liquidations. That is fine:
+        // the oldest ones are the least valuable (prices have moved on), and any account that
+        // is still unhealthy will be re-queued on the next resync or oracle update.
+        Err(RecvError::Lagged(n)) => {
+            warn!("Liquidation executor fell behind, {n} stale liquidations were dropped.");
+        }
+        Err(RecvError::Closed) => {
+            error!("Liquidation channel closed, stopping the liquidation executor.");
+            return;
+        }
         }
     }
 }

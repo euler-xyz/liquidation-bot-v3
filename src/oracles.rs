@@ -12,7 +12,7 @@ use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
 use serde_with::TimestampSeconds;
 use serde_with::serde_as;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::broadcast::Sender;
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -375,9 +375,14 @@ pub async fn poll_oracles(
             };
         }
 
-        // Notify the main thread of the price changes, if any.
+        // Notify the main thread of the price changes, if any. A broadcast send never blocks:
+        // if the buffer is full the oldest batch is overwritten (and reconciled by the next
+        // full resync), so a stalled consumer can never stall this watcher. It only errors
+        // when there is no receiver at all.
         if !changes.is_empty() {
-            event_channel.send(changes).await?;
+            event_channel
+                .send(changes)
+                .map_err(|_| anyhow!("Oracle update channel has no receivers, the main loop is gone."))?;
         }
     }
 }

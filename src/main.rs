@@ -11,7 +11,7 @@ use futures::{StreamExt, stream};
 use itertools::Itertools;
 use reqwest::Url;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -130,7 +130,11 @@ async fn main() {
     let accounts = Arc::new(AccountsTracker::new());
     let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
-    let (account_events_sender, account_events_receiver) = mpsc::channel::<Address>(100);
+    // NOTE: These are broadcast channels on purpose: a `broadcast` send never blocks, when the
+    // ring buffer is full the oldest item is overwritten instead. That way a slow or stalled
+    // consumer can never backpressure a producer into stalling too, worst case items are dropped
+    // (and logged as `Lagged` on the consumer side) and the next full resync reconciles.
+    let (account_events_sender, account_events_receiver) = broadcast::channel::<Address>(512);
     let account_provider = provider.clone();
     tokio::spawn(async move {
         watch_chain_for_accounts_from_latest(
@@ -141,7 +145,7 @@ async fn main() {
         .await
     });
 
-    let (oracles_sender, oracles_receiver) = mpsc::channel::<Vec<OracleChange>>(100);
+    let (oracles_sender, oracles_receiver) = broadcast::channel::<Vec<OracleChange>>(128);
     let oracle_provider = provider.clone();
     {
         let oracles = oracles.clone();
@@ -162,7 +166,7 @@ async fn main() {
         });
     }
 
-    let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+    let (liquidation_sender, liquidation_receiver) = broadcast::channel::<PreparedLiquidation>(128);
 
     // If the config specifies we should be running in simulation mode then we configure an anvil
     // fork for transaction settlement, otherwise we use the mainnet rpc.
@@ -271,9 +275,9 @@ pub async fn run(
     oracles: OraclesCache,
 
     // Channels for communicating with the other threads.
-    mut account_update_channel: Receiver<Address>,
-    mut oracle_update_channel: Receiver<Vec<OracleChange>>,
-    liquidation_channel: Sender<PreparedLiquidation>,
+    mut account_update_channel: broadcast::Receiver<Address>,
+    mut oracle_update_channel: broadcast::Receiver<Vec<OracleChange>>,
+    liquidation_channel: broadcast::Sender<PreparedLiquidation>,
     swap_provider: &impl SwapQuoteProvider,
     state: Option<tokio::sync::watch::Sender<Heartbeat>>,
 ) {
@@ -284,6 +288,10 @@ pub async fn run(
     // NOTE: The same account can end up in the liquidation queue more than once (e.g. a resync
     // and a price update in quick succession). This is fine: the second attempt will fail at the
     // executor's gas estimation step and be discarded.
+
+    // NOTE: A closed channel means the watcher task on the other end died, and there is no way
+    // to recover it from here. We exit the process so the container gets restarted into a fresh,
+    // fully-working state, rather than continuing to run half-functional.
 
     loop {
         tokio::select! {
@@ -324,7 +332,19 @@ pub async fn run(
                     info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
                 }
             }
-            Some(oracle_updates) = oracle_update_channel.recv() => {
+            result = oracle_update_channel.recv() => {
+                let oracle_updates = match result {
+                    Ok(oracle_updates) => oracle_updates,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Main loop lagged behind on oracle updates, {n} update batches were dropped, the next resync will reconcile.");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        error!("Oracle update channel closed, the oracle watcher is no longer running. Exiting so we get restarted into a working state.");
+                        std::process::exit(1);
+                    }
+                };
+
                 // Figure out what accounts are affected by this change.
                 let accounts_affected = accounts.get_bulk_impacted_accounts(
                     oracle_updates.iter().map(|oc| oc.oracle.clone()).collect(),
@@ -374,7 +394,19 @@ pub async fn run(
             },
             // Track when an event happens on chain involving an account that potentially updates
             // its collaterals and borrows, we (re)fetch the account and add it to our tracker.
-            Some(account_event) = account_update_channel.recv() => {
+            result = account_update_channel.recv() => {
+                let account_event = match result {
+                    Ok(account_event) => account_event,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Main loop lagged behind on account events, {n} events were dropped, the next resync will reconcile.");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        error!("Account event channel closed, the account watcher is no longer running. Exiting so we get restarted into a working state.");
+                        std::process::exit(1);
+                    }
+                };
+
                 // Fetch the account.
                 match fetch_account(
                     provider.clone().erased(),
@@ -415,7 +447,7 @@ pub async fn prepare_liquidations(
     config: &Config,
     oracles: &OraclesCache,
     unhealthy_accounts: Vec<Account>,
-    liquidation_channel: Option<&Sender<PreparedLiquidation>>,
+    liquidation_channel: Option<&broadcast::Sender<PreparedLiquidation>>,
 ) -> Result<Vec<PreparedLiquidation>> {
     let prepared: Vec<_> = stream::iter(unhealthy_accounts).map(|account| async move {
         // First we check if any of the oracles this account makes use of are Pyth.
@@ -495,16 +527,18 @@ pub async fn prepare_liquidations(
                 Ok(Some(liquidation)) => {
                     // If we should send it to the liquidation channel we do so now.
                     if let Some(liquidation_channel) = liquidation_channel {
-                        // NOTE: We use `try_send` on purpose: an `.await` on a full channel
-                        // here blocks the entire main loop (which stalls the account and
-                        // oracle watchers through backpressure). Dropping the liquidation is
-                        // safe, the account is still unhealthy and will be picked up again on
-                        // the next resync or oracle update.
-                        if let Err(e) = liquidation_channel.try_send(liquidation.clone()) {
+                        // NOTE: A broadcast send never blocks. If the ring buffer is full the
+                        // oldest liquidation is overwritten, which is the one we care about
+                        // least (the executor will log it as `Lagged`). It only errors when
+                        // there is no receiver at all, i.e. the executor is gone — which we
+                        // cannot recover from here, so we exit and let the container restart
+                        // us into a working state.
+                        if let Err(e) = liquidation_channel.send(liquidation.clone()) {
                             tracing::error!(
-                                "Could not queue liquidation for {} (channel full or closed), it will be retried on the next check. err: {}",
+                                "Could not queue liquidation for {}, the liquidation executor is no longer running. Exiting so we get restarted into a working state. err: {}",
                                 account.address, e
                             );
+                            std::process::exit(1);
                         }
                     }
 
@@ -781,7 +815,7 @@ mod test {
         primitives::{U256, address, bytes},
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
     };
-    use tokio::sync::mpsc;
+    use tokio::sync::broadcast;
     use tracing_subscriber::EnvFilter;
 
     struct MockSwapProvider;
@@ -860,7 +894,7 @@ mod test {
         .await
         .unwrap();
 
-        let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+        let (liquidation_sender, liquidation_receiver) = broadcast::channel::<PreparedLiquidation>(128);
 
         {
             let provider = ProviderBuilder::new()
@@ -887,7 +921,7 @@ mod test {
         .unwrap();
 
         // Send the liquidation to be executed.
-        liquidation_sender.send(liquidation).await.unwrap();
+        liquidation_sender.send(liquidation).unwrap();
 
         // Give it some time to perform the liquidation.
         wait_for_next_block(&provider, Some(block)).await;
@@ -1033,7 +1067,7 @@ mod test {
         .await
         .unwrap();
 
-        let (liquidation_sender, liquidation_receiver) = mpsc::channel::<PreparedLiquidation>(100);
+        let (liquidation_sender, liquidation_receiver) = broadcast::channel::<PreparedLiquidation>(128);
 
         {
             let provider = ProviderBuilder::new()
@@ -1095,7 +1129,7 @@ mod test {
         .unwrap();
 
         // Send the liquidation to be executed.
-        liquidation_sender.send(liquidation).await.unwrap();
+        liquidation_sender.send(liquidation).unwrap();
 
         // Give it some time to perform the liquidation.
         wait_for_next_block(&provider, Some(block)).await;
