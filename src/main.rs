@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     account::watch_chain_for_accounts_from_latest,
     accounts::AccountsTracker,
-    api::{BotHealth, BotState, serve},
+    api::{BotHealth, BotState, Heartbeat, serve},
     config::{Config, get_config},
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
@@ -212,7 +212,7 @@ async fn main() {
         execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
     });
 
-    let (tx, rx) = tokio::sync::watch::channel(BotHealth::Syncing);
+    let (tx, rx) = tokio::sync::watch::channel(Heartbeat::now(BotHealth::Syncing));
 
     if config.enable_observability_api {
         // Start the observability api.
@@ -220,6 +220,11 @@ async fn main() {
             accounts: accounts.clone(),
             oracles: oracles.clone(),
             state: rx,
+            // The main loop heartbeats once per resync tick, but a tick only completes after the
+            // resync pass itself (which takes a while) has finished.
+            stale_after: tokio::time::Duration::from_secs(
+                config.full_resync_and_check_interval_seconds * 2,
+            ),
         };
 
         tokio::spawn(async move {
@@ -270,15 +275,15 @@ pub async fn run(
     mut oracle_update_channel: Receiver<Vec<OracleChange>>,
     liquidation_channel: Sender<PreparedLiquidation>,
     swap_provider: &impl SwapQuoteProvider,
-    state: Option<tokio::sync::watch::Sender<BotHealth>>,
+    state: Option<tokio::sync::watch::Sender<Heartbeat>>,
 ) {
     let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
         config.full_resync_and_check_interval_seconds,
     ));
 
-    // TODO: Keep track of accounts for which the liquidation is currently being processed or was
-    // already processed but not yet updated. Otherwise unlucky timing of a price update might cause
-    // us to attempt to liquidate it twice.
+    // NOTE: The same account can end up in the liquidation queue more than once (e.g. a resync
+    // and a price update in quick succession). This is fine: the second attempt will fail at the
+    // executor's gas estimation step and be discarded.
 
     loop {
         tokio::select! {
@@ -289,13 +294,19 @@ pub async fn run(
                     Ok(unhealthy_accounts) => unhealthy_accounts,
                     Err(e) => {
                         tracing::error!("Error while refreshing, err:{:?}", e);
+
+                        // Still heartbeat: the loop itself is alive, the sync just failed.
+                        if let Some(ref state_sender) = state {
+                            let _ = state_sender.send(Heartbeat::now(BotHealth::Error(format!("Resync failed: {e:?}"))));
+                        }
+
                         continue;
                     }
                 };
 
-                // Signal that the bot is healthy and finished syncing.
+                // Heartbeat that the bot is healthy and finished syncing.
                 if let Some(ref state_sender) = state {
-                    let _ = state_sender.send(BotHealth::Healthy).inspect_err(|e| {
+                    let _ = state_sender.send(Heartbeat::now(BotHealth::Healthy)).inspect_err(|e| {
                         tracing::warn!("Could not signal healthy state due to error with sender, err: {:?}", e);
                     });
                 }
@@ -406,7 +417,7 @@ pub async fn prepare_liquidations(
     unhealthy_accounts: Vec<Account>,
     liquidation_channel: Option<&Sender<PreparedLiquidation>>,
 ) -> Result<Vec<PreparedLiquidation>> {
-    let prepared: Vec<_> = stream::iter(unhealthy_accounts).map(|account| async move { 
+    let prepared: Vec<_> = stream::iter(unhealthy_accounts).map(|account| async move {
         // First we check if any of the oracles this account makes use of are Pyth.
         // If so we need to fetch their most recent quotes.
         let mut pyth_ids = Vec::new();
@@ -484,9 +495,17 @@ pub async fn prepare_liquidations(
                 Ok(Some(liquidation)) => {
                     // If we should send it to the liquidation channel we do so now.
                     if let Some(liquidation_channel) = liquidation_channel {
-                        let _ = liquidation_channel.send(liquidation.clone()).await.inspect_err(|e| 
-                            tracing::error!("Error while attempting to send liquidation over the channel, this is fatal. err: {}", e)
-                        );
+                        // NOTE: We use `try_send` on purpose: an `.await` on a full channel
+                        // here blocks the entire main loop (which stalls the account and
+                        // oracle watchers through backpressure). Dropping the liquidation is
+                        // safe, the account is still unhealthy and will be picked up again on
+                        // the next resync or oracle update.
+                        if let Err(e) = liquidation_channel.try_send(liquidation.clone()) {
+                            tracing::error!(
+                                "Could not queue liquidation for {} (channel full or closed), it will be retried on the next check. err: {}",
+                                account.address, e
+                            );
+                        }
                     }
 
                     debug!("Found route to liquidate {}", account.address);

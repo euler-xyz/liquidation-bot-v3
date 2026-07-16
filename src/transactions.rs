@@ -8,6 +8,13 @@ use tracing::{error, info, warn};
 
 use crate::liquidation::PreparedLiquidation;
 
+/// How long we wait for a liquidation transaction to be included before giving up on it.
+///
+/// Without this a transaction that never gets mined (underpriced gas, nonce gap, dropped from the
+/// mempool) parks this queue forever, which backpressures the liquidation channel and eventually
+/// stalls the main loop.
+const RECEIPT_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
+
 /// Calculates the total cost of executing a liquidation transaction.
 ///
 /// This is the gas cost (`gas_usage * gas_price`) plus any Pyth update fee that
@@ -94,7 +101,24 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             // NOTE: We do not wait for any extra confirmations as there is essentially no risk
             // of a re-org.
             let tx = match provider.send_transaction(tx).await {
-                Ok(tx) => tx.get_receipt().await,
+                Ok(pending) => {
+                    let tx_hash = *pending.tx_hash();
+
+                    // Bound how long we wait for inclusion so a stuck transaction cannot park
+                    // this queue (and, through channel backpressure, the main loop) forever.
+                    match tokio::time::timeout(RECEIPT_TIMEOUT, pending.get_receipt()).await {
+                        Ok(receipt) => receipt,
+                        Err(_) => {
+                            error!(
+                                account =? liquidation.account(),
+                                "Timed out after {:?} waiting for receipt of liquidation transaction {}, giving up on it so the queue keeps moving.",
+                                RECEIPT_TIMEOUT,
+                                tx_hash
+                            );
+                            continue;
+                        }
+                    }
+                }
                 Err(err) => {
                     error!(
                         account =? liquidation.account(),
