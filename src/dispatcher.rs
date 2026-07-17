@@ -712,7 +712,7 @@ mod tests {
     // --- nonce state, with a mocked provider -------------------------------------------------
 
     #[tokio::test]
-    async fn nonce_is_synced_from_chain_and_clears_stale_floor() {
+    async fn mocked_nonce_is_synced_from_chain_and_clears_stale_floor() {
         let asserter = alloy::transports::mock::Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter.clone());
 
@@ -739,5 +739,281 @@ mod tests {
         assert_eq!(dispatcher.resync_nonce().await.unwrap(), 7);
         assert_eq!(dispatcher.next_nonce, Some(7));
         assert!(dispatcher.fee_floor.is_none());
+    }
+}
+
+/// Tests of the full dispatch flow against a local Anvil node. Auto-mining is toggled off to
+/// simulate transactions genuinely stuck in the mempool, and blocks are mined on demand to
+/// control exactly when inclusion happens.
+#[cfg(test)]
+mod anvil_tests {
+    use super::*;
+    use alloy::{
+        consensus::Transaction,
+        node_bindings::{Anvil, AnvilInstance},
+        providers::{ProviderBuilder, ext::AnvilApi},
+    };
+
+    /// A short timeout config so the tests run fast: 500ms inclusion wait, 2 bumps, +25%.
+    fn fast_config() -> DispatchConfig {
+        DispatchConfig {
+            inclusion_timeout: Duration::from_millis(500),
+            max_bumps: 2,
+            bump_percent: 25,
+        }
+    }
+
+    /// Spawns a fresh local Anvil node and returns it together with a wallet-enabled provider
+    /// and the sender address (the first dev account).
+    fn setup() -> (AnvilInstance, impl Provider + Clone, Address) {
+        let anvil = Anvil::new().try_spawn().unwrap();
+        let sender = anvil.addresses()[0];
+        let provider = ProviderBuilder::new()
+            .wallet(anvil.wallet().unwrap())
+            .connect_http(anvil.endpoint_url());
+
+        (anvil, provider, sender)
+    }
+
+    /// A minimal ETH transfer with the gas limit pre-set, mirroring how the executor hands the
+    /// dispatcher a fully-built transaction.
+    fn transfer(to: Address) -> TransactionRequest {
+        TransactionRequest::default()
+            .with_to(to)
+            .with_value(U256::from(1))
+            .with_gas_limit(21_000)
+    }
+
+    /// Mines a block every `every` until aborted. Used to include whatever the dispatcher has
+    /// pending without racing a single fixed-time mine against its retry windows.
+    fn spawn_miner(
+        provider: impl Provider + Clone + 'static,
+        initial_delay: Duration,
+        every: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            tokio::time::sleep(initial_delay).await;
+            loop {
+                let _ = provider.anvil_mine(Some(1), None).await;
+                tokio::time::sleep(every).await;
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn happy_path_increments_nonce() {
+        let (_anvil, provider, sender) = setup();
+        let recipient = _anvil.addresses()[1];
+        let mut dispatcher = Dispatcher::new(provider.clone(), sender, fast_config());
+
+        // Two sequential dispatches, both should be included by auto-mining.
+        for _ in 0..2 {
+            let outcome = dispatcher.dispatch(transfer(recipient), 21_000, U256::MAX).await;
+            let DispatchOutcome::Included(receipt) = outcome else {
+                panic!("expected inclusion, got {outcome:?}");
+            };
+            assert!(receipt.status());
+        }
+
+        // Both consumed a nonce on chain and the dispatcher agrees on what comes next.
+        let chain_nonce = provider.get_transaction_count(sender).latest().await.unwrap();
+        assert_eq!(chain_nonce, 2);
+        assert_eq!(dispatcher.next_nonce, Some(2));
+        assert!(dispatcher.fee_floor.is_none());
+    }
+
+    #[tokio::test]
+    async fn stuck_transaction_is_bumped_then_included() {
+        let (_anvil, provider, sender) = setup();
+        let recipient = _anvil.addresses()[1];
+        let mut dispatcher = Dispatcher::new(provider.clone(), sender, fast_config());
+
+        provider.anvil_set_auto_mine(false).await.unwrap();
+
+        // The fee estimate the first attempt will use (stable: no blocks are being mined).
+        let initial = provider.estimate_eip1559_fees().await.unwrap();
+
+        // Only start mining after the first attempt's inclusion window has passed, so the
+        // transaction that eventually mines must be a bumped replacement.
+        let miner = spawn_miner(
+            provider.clone(),
+            Duration::from_millis(1200),
+            Duration::from_millis(300),
+        );
+
+        let outcome = dispatcher.dispatch(transfer(recipient), 21_000, U256::MAX).await;
+        miner.abort();
+
+        let DispatchOutcome::Included(receipt) = outcome else {
+            panic!("expected inclusion after bumping, got {outcome:?}");
+        };
+        assert!(receipt.status());
+
+        // The mined transaction must carry bumped fees (>= +25% over the initial estimate),
+        // proving a replacement mined rather than the original.
+        let mined = provider
+            .get_transaction_by_hash(receipt.transaction_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            mined.max_fee_per_gas() >= initial.max_fee_per_gas * 125 / 100,
+            "expected bumped fees, initial cap {} vs mined cap {}",
+            initial.max_fee_per_gas,
+            mined.max_fee_per_gas()
+        );
+        assert_eq!(mined.nonce(), 0);
+    }
+
+    #[tokio::test]
+    async fn abandoned_after_max_bumps_keeps_nonce_and_floor() {
+        let (_anvil, provider, sender) = setup();
+        let recipient = _anvil.addresses()[1];
+        let mut dispatcher = Dispatcher::new(provider.clone(), sender, fast_config());
+
+        provider.anvil_set_auto_mine(false).await.unwrap();
+        let initial = provider.estimate_eip1559_fees().await.unwrap();
+
+        // Nothing ever mines: initial send + 2 bumps, then the transaction is abandoned.
+        let outcome = dispatcher.dispatch(transfer(recipient), 21_000, U256::MAX).await;
+        assert!(matches!(outcome, DispatchOutcome::Abandoned), "got {outcome:?}");
+
+        // The nonce is kept for the next dispatch to replace the stuck transaction, and the
+        // floor reflects two bumps over the initial estimate (1.25^2 = ~1.56x).
+        assert_eq!(dispatcher.next_nonce, Some(0));
+        let floor = dispatcher.fee_floor.expect("floor should be recorded");
+        assert!(
+            floor.cap() > initial.max_fee_per_gas * 150 / 100,
+            "expected a twice-bumped floor, initial cap {} vs floor cap {}",
+            initial.max_fee_per_gas,
+            floor.cap()
+        );
+    }
+
+    #[tokio::test]
+    async fn next_dispatch_replaces_abandoned_transaction() {
+        let (_anvil, provider, sender) = setup();
+        let recipient_a = _anvil.addresses()[1];
+        let recipient_b = _anvil.addresses()[2];
+        let mut dispatcher = Dispatcher::new(provider.clone(), sender, fast_config());
+
+        provider.anvil_set_auto_mine(false).await.unwrap();
+
+        // Transaction A gets stuck and is abandoned at nonce 0.
+        let outcome_a = dispatcher.dispatch(transfer(recipient_a), 21_000, U256::MAX).await;
+        assert!(matches!(outcome_a, DispatchOutcome::Abandoned), "got {outcome_a:?}");
+
+        // Transaction B is dispatched while blocks are being mined. It must NOT queue behind A:
+        // it replaces A at the same nonce and gets included.
+        let miner = spawn_miner(
+            provider.clone(),
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        );
+        let outcome_b = dispatcher.dispatch(transfer(recipient_b), 21_000, U256::MAX).await;
+        miner.abort();
+
+        let DispatchOutcome::Included(receipt) = outcome_b else {
+            panic!("expected B to be included, got {outcome_b:?}");
+        };
+        assert!(receipt.status());
+
+        // B mined at the nonce A was stuck on, and A itself never mined.
+        let mined = provider
+            .get_transaction_by_hash(receipt.transaction_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mined.nonce(), 0, "B should replace A at nonce 0");
+        assert_eq!(receipt.to, Some(recipient_b), "the mined transaction should be B");
+        let chain_nonce = provider.get_transaction_count(sender).latest().await.unwrap();
+        assert_eq!(chain_nonce, 1, "exactly one transaction should have mined");
+    }
+
+    #[tokio::test]
+    async fn nonce_too_low_triggers_resync() {
+        let (_anvil, provider, sender) = setup();
+        let recipient_a = _anvil.addresses()[1];
+        let recipient_b = _anvil.addresses()[2];
+        let mut dispatcher = Dispatcher::new(provider.clone(), sender, fast_config());
+
+        provider.anvil_set_auto_mine(false).await.unwrap();
+
+        // Abandon A at nonce 0...
+        let outcome_a = dispatcher.dispatch(transfer(recipient_a), 21_000, U256::MAX).await;
+        assert!(matches!(outcome_a, DispatchOutcome::Abandoned), "got {outcome_a:?}");
+
+        // ...then A mines after all, consuming nonce 0 while the dispatcher still plans to
+        // reuse it.
+        provider.anvil_mine(Some(1), None).await.unwrap();
+        let chain_nonce = provider.get_transaction_count(sender).latest().await.unwrap();
+        assert_eq!(chain_nonce, 1, "the abandoned transaction should have mined");
+
+        // Dispatching B first hits `nonce too low`, re-syncs, and lands at nonce 1.
+        provider.anvil_set_auto_mine(true).await.unwrap();
+        let outcome_b = dispatcher.dispatch(transfer(recipient_b), 21_000, U256::MAX).await;
+
+        let DispatchOutcome::Included(receipt) = outcome_b else {
+            panic!("expected B to be included after the nonce re-sync, got {outcome_b:?}");
+        };
+        assert!(receipt.status());
+
+        let mined = provider
+            .get_transaction_by_hash(receipt.transaction_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mined.nonce(), 1, "B should have re-synced to nonce 1");
+        assert_eq!(dispatcher.next_nonce, Some(2));
+    }
+
+    #[tokio::test]
+    async fn budget_refuses_first_send() {
+        let (_anvil, provider, sender) = setup();
+        let recipient = _anvil.addresses()[1];
+        let mut dispatcher = Dispatcher::new(provider.clone(), sender, fast_config());
+
+        // A budget of 1 wei cannot cover any send; nothing should reach the chain.
+        let outcome = dispatcher
+            .dispatch(transfer(recipient), 21_000, U256::from(1))
+            .await;
+        assert!(matches!(outcome, DispatchOutcome::Failed(_)), "got {outcome:?}");
+
+        let chain_nonce = provider.get_transaction_count(sender).pending().await.unwrap();
+        assert_eq!(chain_nonce, 0, "no transaction should have been sent");
+    }
+
+    #[tokio::test]
+    async fn budget_refuses_bump_and_abandons() {
+        let (_anvil, provider, sender) = setup();
+        let recipient = _anvil.addresses()[1];
+        let mut dispatcher = Dispatcher::new(provider.clone(), sender, fast_config());
+
+        provider.anvil_set_auto_mine(false).await.unwrap();
+
+        // Budget exactly covers the initial attempt (value of 1 wei included), but not a +25%
+        // bump.
+        let initial = provider.estimate_eip1559_fees().await.unwrap();
+        let budget = attempt_cost(
+            21_000,
+            &Fees::Eip1559 {
+                max_fee_per_gas: initial.max_fee_per_gas,
+                max_priority_fee_per_gas: initial.max_priority_fee_per_gas,
+            },
+            U256::from(1),
+        );
+
+        let outcome = dispatcher.dispatch(transfer(recipient), 21_000, budget).await;
+        assert!(matches!(outcome, DispatchOutcome::Abandoned), "got {outcome:?}");
+
+        // Exactly one transaction was sent (it is pending), and the floor is the unbumped
+        // initial fee.
+        let pending_nonce = provider.get_transaction_count(sender).pending().await.unwrap();
+        assert_eq!(pending_nonce, 1, "exactly one send should have happened");
+        let floor = dispatcher.fee_floor.expect("floor should be recorded");
+        assert!(
+            floor.cap() < initial.max_fee_per_gas * 125 / 100,
+            "the floor should be the unbumped initial fee"
+        );
     }
 }
