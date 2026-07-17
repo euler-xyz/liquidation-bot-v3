@@ -6,14 +6,10 @@ use alloy::{
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tracing::{error, info, warn};
 
-use crate::liquidation::PreparedLiquidation;
-
-/// How long we wait for a liquidation transaction to be included before giving up on it.
-///
-/// Without this a transaction that never gets mined (underpriced gas, nonce gap, dropped from the
-/// mempool) parks this queue forever, which backpressures the liquidation channel and eventually
-/// stalls the main loop.
-const RECEIPT_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
+use crate::{
+    dispatcher::{DispatchConfig, DispatchOutcome, Dispatcher},
+    liquidation::PreparedLiquidation,
+};
 
 /// Calculates the total cost of executing a liquidation transaction.
 ///
@@ -30,6 +26,11 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
     mut queue: Receiver<PreparedLiquidation>,
     profit_receiver: Address,
 ) {
+    // The dispatcher owns nonce management, fee bumping and replacement of stuck transactions.
+    // It is strictly serial: one liquidation transaction is in flight at a time.
+    let sender = provider.default_signer_address();
+    let mut dispatcher = Dispatcher::new(provider, sender, DispatchConfig::default());
+
     loop {
         match queue.recv().await {
         Ok(liquidation) => {
@@ -43,7 +44,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             let tx = liquidation.clone().into_transaction(profit_receiver);
 
             // Get the gas price for the liquidation.
-            let gas_price = match provider.get_gas_price().await {
+            let gas_price = match dispatcher.provider().get_gas_price().await {
                 Ok(price) => price,
                 Err(err) => {
                     error!(
@@ -55,7 +56,7 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             };
 
             // Estimate the gas, this also informs us on if its going to revert or not.
-            let gas_usage = match provider.estimate_gas(tx.clone()).await {
+            let gas_usage = match dispatcher.provider().estimate_gas(tx.clone()).await {
                 Ok(usage) => usage,
                 Err(err) => {
                     error!(
@@ -101,37 +102,16 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
 
             // NOTE: We do not wait for any extra confirmations as there is essentially no risk
             // of a re-org.
-            let tx = match provider.send_transaction(tx).await {
-                Ok(pending) => {
-                    let tx_hash = *pending.tx_hash();
-
-                    // Bound how long we wait for inclusion so a stuck transaction cannot park
-                    // this queue (and, through channel backpressure, the main loop) forever.
-                    match tokio::time::timeout(RECEIPT_TIMEOUT, pending.get_receipt()).await {
-                        Ok(receipt) => receipt,
-                        Err(_) => {
-                            error!(
-                                account =? liquidation.account(),
-                                "Timed out after {:?} waiting for receipt of liquidation transaction {}, giving up on it so the queue keeps moving.",
-                                RECEIPT_TIMEOUT,
-                                tx_hash
-                            );
-                            continue;
-                        }
-                    }
-                }
-                Err(err) => {
-                    error!(
-                        account =? liquidation.account(),
-                        "Issue sending transaction, err: {:?}",
-                        err
-                    );
-                    continue;
-                }
-            };
-
-            match tx {
-                Ok(receipt) => {
+            //
+            // The dispatcher waits for inclusion, bumps the fees of a stuck transaction (within
+            // the profit budget) and abandons it after the configured attempts, so a stuck
+            // transaction can never park this queue. We budget with the estimated gas usage, not
+            // the padded gas limit, as that is what the transaction is expected to cost.
+            match dispatcher
+                .dispatch(tx, gas_usage, liquidation.profit())
+                .await
+            {
+                DispatchOutcome::Included(receipt) => {
                     if receipt.status() {
                         info!(
                             account =? liquidation.account(),
@@ -148,15 +128,21 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                         );
                     }
                 }
-                Err(err) => {
+                DispatchOutcome::Abandoned => {
+                    warn!(
+                        account =? liquidation.account(),
+                        "Liquidation transaction for {} was not included after fee bumps, abandoned it. The next transaction will replace it at the same nonce.",
+                        liquidation.account()
+                    );
+                }
+                DispatchOutcome::Failed(reason) => {
                     error!(
                         account =? liquidation.account(),
-                        "Error while waiting for liquidation transaction receipt, err: {:?}",
-                        err
+                        "Failed to dispatch liquidation transaction for {}, err: {reason}",
+                        liquidation.account()
                     );
-                    continue;
                 }
-            };
+            }
 
             // We do not need to notify the main thread that this execution was a success, as our
             // liquidation transaction will cause a `AccountStatusCheck` event which cause the account watcher to sync to the new state.

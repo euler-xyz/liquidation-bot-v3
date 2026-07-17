@@ -42,6 +42,7 @@ mod account;
 mod accounts;
 mod api;
 mod config;
+mod dispatcher;
 mod lens;
 mod liquidation;
 mod oracles;
