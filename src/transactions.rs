@@ -25,11 +25,12 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
     provider: T,
     mut queue: Receiver<PreparedLiquidation>,
     profit_receiver: Address,
+    dispatch_config: DispatchConfig,
 ) {
     // The dispatcher owns nonce management, fee bumping and replacement of stuck transactions.
     // It is strictly serial: one liquidation transaction is in flight at a time.
     let sender = provider.default_signer_address();
-    let mut dispatcher = Dispatcher::new(provider, sender, DispatchConfig::default());
+    let mut dispatcher = Dispatcher::new(provider, sender, dispatch_config);
 
     loop {
         match queue.recv().await {
