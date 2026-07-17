@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 use std::{collections::HashSet, sync::Arc};
 use tokio::{sync::broadcast::Sender, time};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::{
     oracles::{ORACLE_PRICING_UNIT, OraclesCache},

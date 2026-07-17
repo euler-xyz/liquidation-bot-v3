@@ -20,6 +20,7 @@ use crate::{
     accounts::AccountsTracker,
     api::{BotHealth, BotState, Heartbeat, serve},
     config::{Config, get_config},
+    dispatcher::DispatchConfig,
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
     oracles::{OracleChange, OraclesCache, poll_oracles},
@@ -42,6 +43,7 @@ mod account;
 mod accounts;
 mod api;
 mod config;
+mod dispatcher;
 mod lens;
 mod liquidation;
 mod oracles;
@@ -213,7 +215,13 @@ async fn main() {
 
     let profit_receiver = config.profit_receiver;
     tokio::spawn(async move {
-        execute_liquidation_queue(liquidation_provider, liquidation_receiver, profit_receiver).await
+        execute_liquidation_queue(
+            liquidation_provider,
+            liquidation_receiver,
+            profit_receiver,
+            DispatchConfig::default(),
+        )
+        .await
     });
 
     let (tx, rx) = tokio::sync::watch::channel(Heartbeat::now(BotHealth::Syncing));
@@ -801,6 +809,7 @@ mod test {
 
     use crate::{
         config::{VaultFilter, load_configuration_file_for_test},
+        dispatcher::DispatchConfig,
         lens::fetch_account,
         liquidation::{PreparedLiquidation, prepare_liquidation},
         oracles::OraclesCache,
@@ -902,13 +911,14 @@ mod test {
                 .connect_http(network.endpoint_url());
 
             tokio::spawn(async move {
-                execute_liquidation_queue(provider, liquidation_receiver, recipient).await;
+                execute_liquidation_queue(provider, liquidation_receiver, recipient, Default::default()).await;
             });
         }
 
         // Sanity check, as we later also check this and then it will be empty.
         assert!(!account.borrows.is_empty());
 
+        let faked_profit = U256::from(10).pow(U256::from(18));
         let liquidation = prepare_liquidation(
             &provider,
             &MockSwapProvider,
@@ -918,7 +928,8 @@ mod test {
         )
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .with_profit(faked_profit, faked_profit);
 
         // Send the liquidation to be executed.
         liquidation_sender.send(liquidation).unwrap();
@@ -945,7 +956,169 @@ mod test {
         // Check that they no longer have any debt.
         assert!(account.borrows.is_empty());
     }
-    
+
+    #[tokio::test]
+    // Same liquidation fixture as `liquidation` above, but with auto-mining disabled so the
+    // first liquidation transaction gets genuinely stuck. The dispatcher must bump its fees and
+    // the (replacement) transaction must still clear the account's debt. End-to-end proof of the
+    // stuck-transaction handling on real chain state.
+    async fn liquidation_with_stuck_transaction() {
+        let block = 24790465;
+        let violator = address!("0x65E30583c1939344d57bBCdf3A1Bbb28d41164f2");
+        let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
+
+        // Network (mainnet) specific configuration.
+        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+        let account_lens = address!("0xA60c4257c809353039A71527dfe701B577e34bc7");
+        let evc = address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+
+        // Fork the network at the block where this liquidation was present.
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .fork_block_number(block)
+            .arg("--disable-min-priority-fee")
+            .try_spawn()
+            .unwrap();
+        let eoa = network.addresses()[0];
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        // We set the gas fee for the next block to be very low so the liquidation is always
+        // profitable.
+        provider
+            .anvil_set_next_block_base_fee_per_gas(100)
+            .await
+            .unwrap();
+
+        // NOTE: Anvil's dev account #0 uses a well-known public key with real mainnet history,
+        // so on a fork its nonce does not start at 0. All nonce assertions below are relative to
+        // this starting point.
+        let starting_nonce = provider.get_transaction_count(eoa).latest().await.unwrap();
+
+        // Fetch the account and sanity-check it has debt.
+        let account = fetch_account(
+            provider.clone(),
+            &VaultFilter::default(),
+            vaults,
+            account_lens,
+            evc,
+            violator,
+        )
+        .await
+        .unwrap();
+        assert!(!account.borrows.is_empty());
+
+        let (liquidation_sender, liquidation_receiver) =
+            broadcast::channel::<PreparedLiquidation>(128);
+
+        // The executor runs with short dispatch timeouts so the test does not take minutes.
+        {
+            let provider = ProviderBuilder::new()
+                .wallet(network.wallet().unwrap())
+                .connect_http(network.endpoint_url());
+            let config = DispatchConfig {
+                inclusion_timeout: std::time::Duration::from_millis(500),
+                max_bumps: 2,
+                bump_percent: 25,
+            };
+
+            tokio::spawn(async move {
+                execute_liquidation_queue(provider, liquidation_receiver, recipient, config).await;
+            });
+        }
+
+        let faked_profit = U256::from(10).pow(U256::from(18));
+        let liquidation = prepare_liquidation(
+            &provider,
+            &MockSwapProvider,
+            None, // This liquidation does not use any pyth oracles.
+            liquidator_address,
+            account,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .with_profit(faked_profit, faked_profit);
+
+        // From here on nothing mines on its own: the liquidation transaction will be stuck.
+        provider.anvil_set_auto_mine(false).await.unwrap();
+
+        // The miner waits until the executor's first send is visible in the mempool, then lets
+        // its inclusion window expire so only a *bumped replacement* can ever mine, and then
+        // mines continuously.
+        let miner = {
+            let provider = provider.clone();
+            tokio::spawn(async move {
+                loop {
+                    let pending = provider
+                        .get_transaction_count(eoa)
+                        .pending()
+                        .await
+                        .unwrap_or(0);
+                    let latest = provider
+                        .get_transaction_count(eoa)
+                        .latest()
+                        .await
+                        .unwrap_or(u64::MAX);
+                    if pending > latest {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+
+                // Longer than the 500ms inclusion window (plus scheduling slack), so the first
+                // attempt is guaranteed to have been given up on before anything can mine.
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+                loop {
+                    let _ = provider.anvil_mine(Some(1), None).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+            })
+        };
+
+        // Hand the liquidation to the executor.
+        liquidation_sender.send(liquidation).unwrap();
+
+        // Wait for the (bumped) liquidation to clear the debt.
+        let mut cleared = false;
+        for _ in 0..60 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let account = fetch_account(
+                provider.clone(),
+                &VaultFilter::default(),
+                vaults,
+                account_lens,
+                evc,
+                violator,
+            )
+            .await
+            .unwrap();
+
+            if account.borrows.is_empty() {
+                cleared = true;
+                break;
+            }
+        }
+        miner.abort();
+
+        assert!(
+            cleared,
+            "the liquidation was never included despite fee bumps"
+        );
+
+        // Exactly one transaction from the bot's EOA mined: the bumped replacement (all earlier
+        // attempts shared its nonce).
+        let mined = provider.get_transaction_count(eoa).latest().await.unwrap();
+        assert_eq!(mined, starting_nonce + 1);
+    }
+
     async fn debug_transaction() {
         let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let chain_id = 1;
@@ -1075,7 +1248,7 @@ mod test {
                 .connect_http(network.endpoint_url());
 
             tokio::spawn(async move {
-                execute_liquidation_queue(provider, liquidation_receiver, recipient).await;
+                execute_liquidation_queue(provider, liquidation_receiver, recipient, Default::default()).await;
             });
         }
 
