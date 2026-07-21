@@ -1,10 +1,44 @@
 use alloy::primitives::{Address, U256};
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use reqwest::{Client, Url};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
+
+/// Errors that can occur while quoting through the pricing API.
+///
+/// The main reason this is a dedicated type (rather than `anyhow::Error`) is so
+/// callers can distinguish "this chain is not supported by the pricing API at
+/// all" from transient failures, and decide to proceed without a profit figure.
+#[derive(Debug)]
+pub enum PricingError {
+    /// The pricing API does not support the chain we are running on.
+    ChainNotSupported { chain_id: u64, message: String },
+    /// Any other structured error returned by the pricing API.
+    Api { code: String, message: String },
+    /// Transport, decoding or any other unexpected failure.
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for PricingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PricingError::ChainNotSupported { chain_id, message } => {
+                write!(
+                    f,
+                    "chain {chain_id} is not supported by the pricing API: {message}"
+                )
+            }
+            PricingError::Api { code, message } => {
+                write!(f, "pricing API returned an error ({code}): {message}")
+            }
+            PricingError::Other(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for PricingError {}
 
 pub trait PriceAsset {
     async fn quote(
@@ -12,7 +46,7 @@ pub trait PriceAsset {
         input_asset: Address,
         input_amount: U256,
         output_asset: Address,
-    ) -> Result<U256>;
+    ) -> Result<U256, PricingError>;
 }
 
 pub struct EulerPricingApi {
@@ -45,32 +79,65 @@ struct Meta {
     pub timestamp: String,
 }
 
+/// The error shape the pricing API returns, e.g.
+/// `{"error":{"code":"CHAIN_NOT_SUPPORTED","message":"Chain 146 is not supported","requestId":"req_..."}}`
+#[derive(Debug, Clone, Deserialize)]
+struct ApiErrorResponse {
+    pub error: ApiErrorBody,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ApiErrorBody {
+    pub code: String,
+    pub message: String,
+}
+
 async fn get_euler_price(
     client: &ClientWithMiddleware,
     base_url: &Url,
     chain_id: u64,
     asset: Address,
-) -> Result<PriceData> {
+) -> Result<PriceData, PricingError> {
     let url = reqwest::Url::parse(
         format!("{}v3/tokens/{}/{}/price", base_url, chain_id, asset).as_str(),
-    )?;
+    )
+    .map_err(|err| PricingError::Other(err.into()))?;
 
     let start = Instant::now();
-    let response_body = client.get(url).send().await?.text().await?;
+    let response_body = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| PricingError::Other(err.into()))?
+        .text()
+        .await
+        .map_err(|err| PricingError::Other(err.into()))?;
 
-    let response: PriceResponse = match serde_json::from_str(&response_body) {
-        Ok(data) => data,
-        Err(err) => {
-            return Err(anyhow!(
-                "Issue while decoding response from price quote api, err: {:?}, response_body: {}",
-                err,
-                response_body
-            ));
+    // The API either returns the price data or a structured error object. Try to decode the
+    // success shape first, then fall back to the error shape.
+    let decode_err = match serde_json::from_str::<PriceResponse>(&response_body) {
+        Ok(response) => {
+            tracing::debug!("Euler price request took {:?}", start.elapsed());
+            return Ok(response.data);
         }
+        Err(err) => err,
     };
 
-    tracing::debug!("Euler price request took {:?}", start.elapsed());
-    Ok(response.data)
+    if let Ok(response) = serde_json::from_str::<ApiErrorResponse>(&response_body) {
+        let ApiErrorBody { code, message } = response.error;
+
+        return Err(if code == "CHAIN_NOT_SUPPORTED" {
+            PricingError::ChainNotSupported { chain_id, message }
+        } else {
+            PricingError::Api { code, message }
+        });
+    }
+
+    Err(PricingError::Other(anyhow!(
+        "Issue while decoding response from price quote api, err: {:?}, response_body: {}",
+        decode_err,
+        response_body
+    )))
 }
 
 impl EulerPricingApi {
@@ -114,8 +181,12 @@ impl PriceAsset for EulerPricingApi {
         input_asset: Address,
         input_amount: U256,
         output_asset: Address,
-    ) -> Result<U256> {
+    ) -> Result<U256, PricingError> {
         // No need to do a conversion if both assets are the same.
+        // NOTE: This short-circuit never hits the API. So even on chains the pricing API does
+        // not support, quotes where input == output (e.g. the profit is already denominated in
+        // the native asset) still return a real amount and go through the normal profit gate,
+        // instead of the `ChainNotSupported` handling.
         if input_asset == output_asset {
             return Ok(input_amount);
         }

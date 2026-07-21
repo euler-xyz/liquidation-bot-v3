@@ -56,6 +56,17 @@ sol! {
 
 }
 
+/// The expected profit of a liquidation, denominated in the native asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedProfit {
+    /// The profit converted into the native asset through the pricing API.
+    Native(U256),
+    /// The pricing API does not support this chain, so the profit in native terms can not be
+    /// determined. Liquidations with an unknown profit are executed as long as they are
+    /// possible, without any profitability check.
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 /// Contains all the data required to execute a liquidation.
 pub struct PreparedLiquidation {
@@ -75,8 +86,9 @@ pub struct PreparedLiquidation {
     swap: Option<SwapPayload>,
     // The liquidator contract being used.
     liquidator: Address,
-    // The resulting profit from the liquidation, converted into ETH.
-    profit: U256,
+    // The resulting profit from the liquidation, converted into the native asset, or unknown
+    // when the pricing API does not support this chain.
+    profit: ExpectedProfit,
     // The profit from the liquidation in the original asset.
     profit_in_asset: U256,
 }
@@ -199,7 +211,7 @@ pub async fn prepare_liquidation(
 
             // These fields will be caldulated and set by the swap provider.
             swap: None,
-            profit: U256::ZERO,
+            profit: ExpectedProfit::Native(U256::ZERO),
             profit_in_asset: U256::ZERO,
         };
 
@@ -225,10 +237,18 @@ pub async fn prepare_liquidation(
             };
 
         // Check if the profit from this would be higher than what we have previously found.
-        if let Some(prepared) = &prepared_liquidation
-            && prepared.profit > new_potential_liquidation.profit
-        {
-            continue;
+        if let Some(prepared) = &prepared_liquidation {
+            let new_is_better = match (prepared.profit, new_potential_liquidation.profit) {
+                (ExpectedProfit::Native(current), ExpectedProfit::Native(new)) => new >= current,
+                // If the pricing API can not price this chain we can not compare in native
+                // terms. Fall back to the profit in the borrow asset, which is comparable
+                // across collaterals since an account only has a single borrow.
+                _ => new_potential_liquidation.profit_in_asset >= prepared.profit_in_asset,
+            };
+
+            if !new_is_better {
+                continue;
+            }
         }
 
         // The profit will be higher so we store this as the best option.
@@ -269,7 +289,7 @@ impl PreparedLiquidation {
             pyth,
             swap: None,
             liquidator,
-            profit: U256::ZERO,
+            profit: ExpectedProfit::Native(U256::ZERO),
             profit_in_asset: U256::ZERO,
         }
     }
@@ -329,7 +349,7 @@ impl PreparedLiquidation {
         self.account.set_status(status)
     }
 
-    pub fn profit(&self) -> U256 {
+    pub fn profit(&self) -> ExpectedProfit {
         self.profit
     }
 
@@ -365,8 +385,8 @@ impl PreparedLiquidation {
         self
     }
 
-    pub fn with_profit(mut self, native_profit: U256, profit_in_asset: U256) -> Self {
-        self.profit = native_profit;
+    pub fn with_profit(mut self, profit: ExpectedProfit, profit_in_asset: U256) -> Self {
+        self.profit = profit;
         self.profit_in_asset = profit_in_asset;
         self
     }
