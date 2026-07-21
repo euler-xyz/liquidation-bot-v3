@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    liquidation::PreparedLiquidation, prices::PriceAsset, types::LiquidationReasoningError,
+    liquidation::{ExpectedProfit, PreparedLiquidation},
+    prices::{PriceAsset, PricingError},
+    types::LiquidationReasoningError,
 };
 
 // TODO: Once we know what fields we need (and are nice to have for debugging) we should clean
@@ -317,7 +319,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             };
 
             // Calculate the profit as well as in the native asset.
-            let profit_in_native = self
+            let profit_in_native = match self
                 .pricing
                 .quote(
                     liq.collateral().vault.asset,
@@ -325,12 +327,24 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                     self.wrapped_native_asset,
                 )
                 .await
-                .map_err(|e| {
+            {
+                Ok(profit_in_native) => ExpectedProfit::Native(profit_in_native),
+                // The pricing API can not price anything on this chain. We still want to
+                // perform the liquidation if its possible, just without knowing the profit.
+                Err(PricingError::ChainNotSupported { chain_id, message }) => {
+                    tracing::warn!(
+                        chain_id,
+                        "Pricing API does not support this chain ({message}), proceeding without a profitability check"
+                    );
+                    ExpectedProfit::Unknown
+                }
+                Err(e) => {
                     tracing::error!("Could not fetch quote, err: {:?}", e);
-                    LiquidationReasoningError::Other {
+                    return Err(LiquidationReasoningError::Other {
                         message: "Could not calculate profit through the pricing API".to_string(),
-                    }
-                })?;
+                    });
+                }
+            };
 
             return Ok(Some(liq.with_profit(profit_in_native, profit)));
         }
@@ -417,7 +431,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                     // This is valid swap data, since we ordered by profitability we can just return
                     // as this will be the most profitable that we will run into.
                     let profit = quote.amount_out - liq.repay_amount();
-                    let profit_in_native = self
+                    let profit_in_native = match self
                         .pricing
                         .quote(
                             liq.collateral().vault.asset,
@@ -425,13 +439,26 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                             self.wrapped_native_asset,
                         )
                         .await
-                        .map_err(|e| {
+                    {
+                        Ok(profit_in_native) => ExpectedProfit::Native(profit_in_native),
+                        // The pricing API can not price anything on this chain. We still want
+                        // to perform the liquidation if its possible (the simulation above
+                        // already succeeded), just without knowing the profit.
+                        Err(PricingError::ChainNotSupported { chain_id, message }) => {
+                            tracing::warn!(
+                                chain_id,
+                                "Pricing API does not support this chain ({message}), proceeding without a profitability check"
+                            );
+                            ExpectedProfit::Unknown
+                        }
+                        Err(e) => {
                             tracing::error!("Could not fetch quote, err: {:?}", e);
-                            LiquidationReasoningError::Other {
+                            return Err(LiquidationReasoningError::Other {
                                 message: "Could not calculate profit through the pricing API"
                                     .to_string(),
-                            }
-                        })?;
+                            });
+                        }
+                    };
 
                     // NOTE: We could already determine here if this swap is profitable, as we just
                     // did a simulation so we could check gas usage, and we have the potential
@@ -487,8 +514,8 @@ mod test {
 
     use super::{EulerSwapApi, SwapApiResponse, SwapQuote, SwapQuoteProvider, same_asset_profit};
     use crate::{
-        liquidation::PreparedLiquidation,
-        prices::PriceAsset,
+        liquidation::{ExpectedProfit, PreparedLiquidation},
+        prices::{PriceAsset, PricingError},
         types::{Account, Vault, VaultBorrowPosition, VaultCollateralPosition},
     };
 
@@ -532,7 +559,7 @@ mod test {
             _input_asset: Address,
             input_amount: U256,
             _output_asset: Address,
-        ) -> Result<U256> {
+        ) -> Result<U256, PricingError> {
             Ok(input_amount * self.multiplier)
         }
     }
@@ -606,7 +633,7 @@ mod test {
         let prepared = result.expect("expected a prepared liquidation");
 
         assert_eq!(prepared.profit_in_asset(), U256::from(50));
-        assert_eq!(prepared.profit(), U256::from(100));
+        assert_eq!(prepared.profit(), ExpectedProfit::Native(U256::from(100)));
     }
 
     #[tokio::test]

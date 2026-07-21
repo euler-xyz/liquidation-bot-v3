@@ -811,7 +811,7 @@ mod test {
         config::{VaultFilter, load_configuration_file_for_test},
         dispatcher::DispatchConfig,
         lens::fetch_account,
-        liquidation::{PreparedLiquidation, prepare_liquidation},
+        liquidation::{ExpectedProfit, PreparedLiquidation, prepare_liquidation},
         oracles::OraclesCache,
         prices::EulerPricingApi,
         swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuoteProvider},
@@ -849,7 +849,7 @@ mod test {
                 );
 
             let liq = liq.with_profit(
-                U256::from_str("15000000000000").unwrap(),
+                ExpectedProfit::Native(U256::from_str("15000000000000").unwrap()),
                 U256::from_str("15000000000000").unwrap(),
             );
 
@@ -929,7 +929,7 @@ mod test {
         .await
         .unwrap()
         .unwrap()
-        .with_profit(faked_profit, faked_profit);
+        .with_profit(ExpectedProfit::Native(faked_profit), faked_profit);
 
         // Send the liquidation to be executed.
         liquidation_sender.send(liquidation).unwrap();
@@ -1043,7 +1043,7 @@ mod test {
         .await
         .unwrap()
         .unwrap()
-        .with_profit(faked_profit, faked_profit);
+        .with_profit(ExpectedProfit::Native(faked_profit), faked_profit);
 
         // From here on nothing mines on its own: the liquidation transaction will be stuck.
         provider.anvil_set_auto_mine(false).await.unwrap();

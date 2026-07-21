@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     dispatcher::{DispatchConfig, DispatchOutcome, Dispatcher},
-    liquidation::PreparedLiquidation,
+    liquidation::{ExpectedProfit, PreparedLiquidation},
 };
 
 /// Calculates the total cost of executing a liquidation transaction.
@@ -68,17 +68,30 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 }
             };
 
-            // Make sure this is profitable, if not then we do not execute.
+            // Make sure this is profitable, if not then we do not execute. If the profit is
+            // unknown (the pricing API does not support this chain) we skip the check and
+            // execute regardless.
             let cost = liquidation_cost(gas_usage, gas_price, liquidation.pyth_cost());
-            if cost > liquidation.profit() {
-                info!(
-                    account =? liquidation.account(),
-                    gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(), profit_in_asset =? liquidation.profit_in_asset(),
-                    "Transaction to liquidate {} is not profitable, skipping it.",
-                    liquidation.account()
-                );
-                liquidation.set_account_status(crate::types::LiquidationReasoning::Unprofitable);
-                continue;
+            match liquidation.profit() {
+                ExpectedProfit::Native(profit) if cost > profit => {
+                    info!(
+                        account =? liquidation.account(),
+                        gas_price, gas_usage, cost =? cost, profit =? liquidation.profit(), profit_in_asset =? liquidation.profit_in_asset(),
+                        "Transaction to liquidate {} is not profitable, skipping it.",
+                        liquidation.account()
+                    );
+                    liquidation
+                        .set_account_status(crate::types::LiquidationReasoning::Unprofitable);
+                    continue;
+                }
+                ExpectedProfit::Native(_) => {}
+                ExpectedProfit::Unknown => {
+                    info!(
+                        account =? liquidation.account(),
+                        "Profit for liquidating {} is unknown as the pricing API does not support this chain, executing without a profitability check.",
+                        liquidation.account()
+                    );
+                }
             }
 
             info!(
@@ -108,10 +121,15 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
             // the profit budget) and abandons it after the configured attempts, so a stuck
             // transaction can never park this queue. We budget with the estimated gas usage, not
             // the padded gas limit, as that is what the transaction is expected to cost.
-            match dispatcher
-                .dispatch(tx, gas_usage, liquidation.profit())
-                .await
-            {
+            //
+            // When the profit is unknown there is no native amount to budget with, so fee
+            // bumping is only bounded by the dispatcher's configured maximum attempts.
+            let budget = match liquidation.profit() {
+                ExpectedProfit::Native(profit) => profit,
+                ExpectedProfit::Unknown => U256::MAX,
+            };
+
+            match dispatcher.dispatch(tx, gas_usage, budget).await {
                 DispatchOutcome::Included(receipt) => {
                     if receipt.status() {
                         info!(
