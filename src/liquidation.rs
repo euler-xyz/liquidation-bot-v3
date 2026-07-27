@@ -223,7 +223,7 @@ pub async fn prepare_liquidation(
                     continue;
                 }
                 Err(err) => {
-                    tracing::error!(
+                    tracing::warn!(
                         "Issue while attempting to find a swap route, err: {:?}",
                         err
                     );
