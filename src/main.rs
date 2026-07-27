@@ -564,7 +564,7 @@ pub async fn prepare_liquidations(
                 Err(e) => {
                     account.set_status(LiquidationReasoning::Error(e.clone()));
 
-                    tracing::error!(
+                    tracing::warn!(
                         account =? account.address,
                         "Issue when attempting to liquidate account, err: {:?}",
                         e
