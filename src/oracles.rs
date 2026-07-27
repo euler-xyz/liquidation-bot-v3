@@ -67,7 +67,7 @@ impl OraclesCache {
         for id in new_ids.iter() {
             let result = self.fetch_latest_price(provider, id.clone()).await;
             if let Err(err) = result {
-                tracing::error!("Could not fetch price for {:?}, err: {:?}", id, err);
+                tracing::warn!("Could not fetch price for {:?}, err: {:?}", id, err);
             }
         }
     }
@@ -322,7 +322,7 @@ pub async fn poll_oracles(
             let new_price = match oracles.fetch_latest_price(&provider, oracle.clone()).await {
                 Ok(price) => price,
                 Err(e) => {
-                    error!(
+                    warn!(
                         "Error while fetching price for oracle {}: {} -> {}: {e}",
                         oracle.adapter, oracle.base_asset, oracle.quote_asset
                     );
@@ -380,9 +380,9 @@ pub async fn poll_oracles(
         // full resync), so a stalled consumer can never stall this watcher. It only errors
         // when there is no receiver at all.
         if !changes.is_empty() {
-            event_channel
-                .send(changes)
-                .map_err(|_| anyhow!("Oracle update channel has no receivers, the main loop is gone."))?;
+            event_channel.send(changes).map_err(|_| {
+                anyhow!("Oracle update channel has no receivers, the main loop is gone.")
+            })?;
         }
     }
 }
