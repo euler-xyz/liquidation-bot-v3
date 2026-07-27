@@ -135,7 +135,7 @@ pub async fn prepare_liquidation(
                 {
                     Ok(liq_result) => liq_result,
                     Err(err) => {
-                        tracing::error!("Error while checking (pyth) liquidation, err: {:?}", err);
+                        tracing::warn!("Error while checking (pyth) liquidation, err: {:?}", err);
 
                         let attempt_error = LiquidationReasoningError::LiquidationRevert {
                             data: err.as_revert_data().unwrap_or_default(),
@@ -159,7 +159,7 @@ pub async fn prepare_liquidation(
                 {
                     Ok(liq_result) => liq_result,
                     Err(err) => {
-                        tracing::error!("Error while checkingliquidation, err: {:?}", err);
+                        tracing::warn!("Error while checkingliquidation, err: {:?}", err);
 
                         let attempt_error = LiquidationReasoningError::LiquidationRevert {
                             data: err.as_revert_data().unwrap_or_default(),
@@ -186,7 +186,7 @@ pub async fn prepare_liquidation(
         let max_assets = match vault.convertToAssets(max_yield).call().await {
             Ok(max_assets) => max_assets,
             Err(err) => {
-                tracing::error!("Error while converting to assets, err: {:?}", err);
+                tracing::warn!("Error while converting to assets, err: {:?}", err);
 
                 let attempt_error = LiquidationReasoningError::LiquidationRevert {
                     data: err.as_revert_data().unwrap_or_default(),
@@ -656,7 +656,11 @@ mod into_transaction_test {
         };
 
         let liq = PreparedLiquidation::new_for_test(
-            Account::new(Address::random(), vec![borrow.clone()], vec![collateral.clone()]),
+            Account::new(
+                Address::random(),
+                vec![borrow.clone()],
+                vec![collateral.clone()],
+            ),
             borrow,
             collateral,
             U256::from(100),
