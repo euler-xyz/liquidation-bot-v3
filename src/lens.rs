@@ -146,7 +146,7 @@ pub async fn fetch_account(
 
         if !v.assets.is_zero() {
             collaterals.push(VaultCollateralPosition {
-                amount: v.assets,
+                amount: v.shares,
                 vault: vaults
                     .get_or_fetch(&provider, v.vault)
                     .await
