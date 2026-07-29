@@ -115,9 +115,11 @@ mod test {
     };
 
     use crate::{
+        account::AccountSolvency,
         accounts::AccountsTracker,
         config::VaultFilter,
         lens::fetch_account,
+        oracles::OraclesCache,
         types::{Account, OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition},
         vaults::Vaults,
     };
@@ -336,5 +338,87 @@ mod test {
         )
         .await
         .expect_err("Expected this to get filtered out by the whitelist");
+    }
+
+    // Debug helper: fetches a single account at the latest block, logs its values and its
+    // health. The per-chain lens/EVC addresses can be found in the configs directory.
+    // Run with: <RPC_ENV>=<url> cargo test fetch_and_log -- --nocapture
+    async fn fetch_and_log(
+        rpc_env: &str,
+        vault_lens: Address,
+        account_lens: Address,
+        evc: Address,
+        oracle_lens: Address,
+        account: Address,
+    ) -> AccountSolvency {
+        let rpc = std::env::var(rpc_env).unwrap_or_else(|_| panic!("{rpc_env} must be set"));
+        let provider = ProviderBuilder::new()
+            .connect_http(rpc.parse().expect("The RPC must be a valid url"))
+            .erased();
+
+        let vaults = &mut Vaults::new(vault_lens);
+
+        let account = fetch_account(
+            provider.clone(),
+            &VaultFilter::default(),
+            vaults,
+            account_lens,
+            evc,
+            account,
+        )
+        .await
+        .expect("Could not fetch account");
+
+        println!("account: {}", account.address);
+        for b in &account.borrows {
+            println!(
+                "borrow: vault={} asset={} amount={}",
+                b.vault.address, b.vault.asset, b.amount
+            );
+        }
+        for c in &account.collaterals {
+            println!(
+                "collateral: vault={} asset={} amount={}",
+                c.vault.address, c.vault.asset, c.amount
+            );
+        }
+        println!("full: {account:#?}");
+
+        // Health check: fetch prices for all oracles this account depends on, then
+        // calculate its solvency.
+        let oracles = OraclesCache::new(oracle_lens, None);
+        oracles
+            .ensure_prices_for(&provider, account.dependent_on())
+            .await;
+
+        let solvency = account
+            .calculate_health(&oracles)
+            .expect("Could not calculate account health");
+
+        println!(
+            "health: collateral_value={} borrow_value={} unit_of_account={} healthy={}",
+            solvency.collateral_value,
+            solvency.borrow_value,
+            solvency.unit_of_account,
+            solvency.is_healthy()
+        );
+
+        solvency
+    }
+
+    #[tokio::test]
+    async fn fetch_and_check_single_wei_precision() {
+        // Base, addresses from configs/Config.8453.toml.
+        let solvency = fetch_and_log(
+            "BASE_RPC",
+            address!("0x601F023CD063324DdbCADa69460e969fb97e98b9"),
+            address!("0xe6b05A38D6a29D2C8277fA1A8BA069F1693b780C"),
+            address!("0x5301c7dD20bD945D2013b48ed0DEE3A284ca8989"),
+            address!("0xCE85cC424d12B8074bacB81c84dA7C6DA317c4D3"),
+            address!("0xbc2053df37acd48a36a6d6b1b70a47aafc020c1c"),
+        )
+        .await;
+
+        assert!(solvency.is_healthy(), "Expected the account to be healthy");
     }
 }

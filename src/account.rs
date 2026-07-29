@@ -241,9 +241,7 @@ impl Account {
                         // Convert the amount into shares.
                         let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(ORACLE_PRICING_UNIT);
 
-                        // Apply the liquidation LTV onto the underlying.
-                        let amount = amount * ltv.current_liquidation_ltv() / U256::from(10_000);
-
+                        // Convert the amount into the unit_of_account. 
                         prices.get_quote(
                             &OracleIdentifier {
                                 base_asset: a.vault.asset,
@@ -251,7 +249,7 @@ impl Account {
                                 adapter: borrow .vault.adapter,
                             },
                             amount,
-                        )
+                        ).map(|amount| amount * ltv.current_liquidation_ltv() / U256::from(10_000))
                     },
                     None => {
                         debug!( controller =? borrow .vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
