@@ -6,7 +6,9 @@ use tracing::debug;
 use crate::{
     Vaults,
     config::VaultFilter,
-    types::{Account, VaultBorrowPosition, VaultCollateralPosition},
+    types::{
+        Account, LensError, LiquidationReasoning, VaultBorrowPosition, VaultCollateralPosition,
+    },
 };
 
 sol! {
@@ -73,6 +75,8 @@ sol! {
 
     #[derive(Debug)]
     struct VaultAccountInfo {
+        bool queryFailure;
+        bytes queryFailureReason;
         uint256 timestamp;
         address account;
         address vault;
@@ -128,7 +132,18 @@ pub async fn fetch_account(
 
     let mut borrows = Vec::new();
     let mut collaterals = Vec::new();
+    let mut lens_error = None;
     for v in result.vaultAccountInfo.iter() {
+        // Check if a query failure happened in the lens when attempting to fetch the information
+        // for this vault.
+        if v.queryFailure {
+            lens_error = Some(LensError {
+                vault: v.vault,
+                query_failure_reason: v.queryFailureReason.clone(),
+            });
+            continue;
+        }
+
         if !v.borrowed.is_zero() {
             // Check the filter to see if we should be indexing this.
             if filter.should_filter(v.vault) {
@@ -155,5 +170,18 @@ pub async fn fetch_account(
         }
     }
 
-    Ok(Account::new(account, borrows, collaterals))
+    // Create the account.
+    let account = Account::new(account, borrows, collaterals);
+
+    // If an error occured, update the account to contain the lens error.
+    if let Some(error) = lens_error {
+        account.set_status(crate::types::LiquidationReasoning::Error(
+            crate::types::LiquidationReasoningError::LensError {
+                error,
+                state: Box::from(LiquidationReasoning::Unknown),
+            },
+        ));
+    }
+
+    Ok(account)
 }

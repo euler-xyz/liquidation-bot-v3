@@ -36,7 +36,7 @@ pub struct OracleIdentifier {
     pub adapter: Address,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 /// This enum reports the reason for why an account is not being liquidated.
 pub enum LiquidationReasoning {
@@ -64,9 +64,22 @@ pub enum LiquidationReasoningError {
     LiquidationRevert {
         data: Bytes,
     },
+    // This type of error means that while loading the account from the lens we already had an
+    // issue. So we likely do not have a correct status of the account. But this type can hold an
+    // additional state can show the processing state.
+    LensError {
+        error: LensError,
+        state: Box<LiquidationReasoning>,
+    },
     Other {
         message: String,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Hash, PartialEq, Eq)]
+pub struct LensError {
+    pub vault: Address,
+    pub query_failure_reason: Bytes,
 }
 
 impl From<alloy::transports::RpcError<alloy::transports::TransportErrorKind>>
@@ -149,7 +162,42 @@ impl Account {
     // non-critical and only for observability.
     pub fn set_status(&self, status: LiquidationReasoning) {
         if let Ok(mut s) = self.status.try_write() {
-            *s = AccountStatus::from(status);
+            match (&s.status, &status) {
+                // If this new value is a lens error, we replace.
+                (
+                    _,
+                    LiquidationReasoning::Error(LiquidationReasoningError::LensError {
+                        error,
+                        state,
+                    }),
+                ) => {
+                    *s = AccountStatus::from(status);
+                }
+
+                // If the old one is a lens error, we replace the inner state.
+                (
+                    LiquidationReasoning::Error(LiquidationReasoningError::LensError {
+                        error,
+                        state,
+                    }),
+                    _,
+                ) => {
+                    // In this very specific case we nest the state within the LensError,
+                    // this shows its internal state while preserving the fact that this
+                    // account had some issue being fetched from the lens.
+                    *s = AccountStatus::from(LiquidationReasoning::Error(
+                        LiquidationReasoningError::LensError {
+                            error: error.clone(),
+                            state: Box::from(status),
+                        },
+                    ));
+                }
+
+                // If neither is a lens error we replace the entire status.
+                _ => {
+                    *s = AccountStatus::from(status);
+                }
+            };
         }
     }
 }
