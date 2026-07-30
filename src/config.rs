@@ -296,7 +296,7 @@ mod test {
     /// Validates the configuration files against public rpcs.
     async fn validate_configuration_files() {
         validate_configuration_file("https://eth.blockrazor.xyz", 1).await;
-        validate_configuration_file("https://binance-smart-chain-public.nodies.app", 56).await;
+        validate_configuration_file("https://bsc.api.pocket.network", 56).await;
         validate_configuration_file("https://unichain-rpc.publicnode.com", 130).await;
         validate_configuration_file("https://rpc4.monad.xyz", 143).await;
         validate_configuration_file("https://rpc.soniclabs.com", 146).await;
