@@ -79,7 +79,7 @@ impl Vaults {
                     .await
                     .with_context(|| {
                         format!(
-                            "Error while calling the VaultLens for vault {} using lens {}",
+                            "Error while calling the VaultLens for static information on vault {} using lens {}",
                             address, self.vault_lens
                         )
                     })?;

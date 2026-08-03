@@ -113,6 +113,7 @@ mod test {
         primitives::{Address, U256, address},
         providers::{Provider, ProviderBuilder},
     };
+    use tracing_subscriber::EnvFilter;
 
     use crate::{
         account::AccountSolvency,
@@ -232,9 +233,9 @@ mod test {
 
     #[tokio::test]
     async fn filter_whitelist() {
-        let block = 24899561;
-        let account = address!("0x5Dac9ccC215b9Af65B486066786F79d9aa0043Db");
-        let vault = address!("0x9bd52f2805c6af014132874124686e7b248c2cbb");
+        let block = 25644480;
+        let account = address!("0x81633c1357ddb25d8625efb2cad26a60988475bc");
+        let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
 
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let network = Anvil::new()
@@ -260,7 +261,7 @@ mod test {
             provider.clone(),
             &happy_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
             account,
         )
@@ -277,7 +278,7 @@ mod test {
             provider.clone(),
             &sad_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
             account,
         )
@@ -287,9 +288,9 @@ mod test {
 
     #[tokio::test]
     async fn filter_blacklist() {
-        let block = 24899561;
-        let account = address!("0x5Dac9ccC215b9Af65B486066786F79d9aa0043Db");
-        let vault = address!("0x9bd52f2805c6af014132874124686e7b248c2cbb");
+        let block = 25644480;
+        let account = address!("0x81633c1357ddb25d8625efb2cad26a60988475bc");
+        let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
 
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let network = Anvil::new()
@@ -315,7 +316,7 @@ mod test {
             provider.clone(),
             &happy_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
             account,
         )
@@ -332,7 +333,7 @@ mod test {
             provider.clone(),
             &sad_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
+            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
             account,
         )
@@ -350,7 +351,7 @@ mod test {
         evc: Address,
         oracle_lens: Address,
         account: Address,
-    ) -> AccountSolvency {
+    ) -> (Account, AccountSolvency) {
         let rpc = std::env::var(rpc_env).unwrap_or_else(|_| panic!("{rpc_env} must be set"));
         let provider = ProviderBuilder::new()
             .connect_http(rpc.parse().expect("The RPC must be a valid url"))
@@ -403,16 +404,16 @@ mod test {
             solvency.is_healthy()
         );
 
-        solvency
+        (account, solvency)
     }
 
     #[tokio::test]
     async fn fetch_and_check_single_wei_precision() {
         // Base, addresses from configs/Config.8453.toml.
-        let solvency = fetch_and_log(
+        let (_, solvency) = fetch_and_log(
             "BASE_RPC",
             address!("0x601F023CD063324DdbCADa69460e969fb97e98b9"),
-            address!("0xe6b05A38D6a29D2C8277fA1A8BA069F1693b780C"),
+            address!("0x2C29f22D33823D69a8dA9F711B10F58bdDFd4c05"),
             address!("0x5301c7dD20bD945D2013b48ed0DEE3A284ca8989"),
             address!("0xCE85cC424d12B8074bacB81c84dA7C6DA317c4D3"),
             address!("0xbc2053df37acd48a36a6d6b1b70a47aafc020c1c"),
@@ -420,5 +421,31 @@ mod test {
         .await;
 
         assert!(solvency.is_healthy(), "Expected the account to be healthy");
+    }
+
+    #[tokio::test]
+    async fn fetch_and_check_single_borrow_and_collateral() {
+        // Configure tracing.
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("debug,liquidation_bot_v3=debug"))
+            .init();
+
+        // Mainnet, addresses from configs/Config.1.toml.
+        let (account, _) = fetch_and_log(
+            "MAINNET_RPC",
+            address!("0x4A7Bc3bf4db4dD6eEE1b2c27A7C9e35A6fD14bDE"),
+            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
+            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            address!("0x30E6dFB84782A31d561536f64F47231451F7b48A"),
+            address!("0xb6cBe8b123392eF6aA72897Bb85bD6515d2e8dB6"),
+        )
+        .await;
+
+        assert_eq!(account.borrows.len(), 1, "Expected exactly one borrow");
+        assert_eq!(
+            account.collaterals.len(),
+            1,
+            "Expected exactly one collateral"
+        );
     }
 }
