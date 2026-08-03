@@ -267,9 +267,8 @@ pub fn get_config(config_folder_path: Option<String>) -> Result<Config> {
 
 #[cfg(test)]
 pub fn load_configuration_file_for_test(rpc_url: &str, chain_id: u64) -> anyhow::Result<Config> {
-    use crate::config::get_config;
     use alloy::signers::local::PrivateKeySigner;
-    use std::{env, str::FromStr};
+    use std::str::FromStr;
 
     // Generate an EOA wallet.
     // NOTE: This is not a private key that is ever used, it holds no funds, it is just a
@@ -280,16 +279,37 @@ pub fn load_configuration_file_for_test(rpc_url: &str, chain_id: u64) -> anyhow:
         .address()
         .to_string();
 
-    // We need to set some environment variables to act like the production environment.
-    unsafe {
-        env::set_var("CHAIN_ID", chain_id.to_string());
-        env::set_var(format!("RPC_URL_{}", chain_id), rpc_url);
-        env::set_var("SUBGRAPH_URL_PREFIX", "https://mock-subgraph-url.com/");
-        env::set_var("EOA_ADDRESS", public_address);
-        env::set_var("EOA_PRIVATE_KEY", private_key);
-    }
+    // The values that in production come from the environment. We pass them directly into
+    // figment instead of going through `env::set_var`: environment variables are process
+    // wide and tests run in parallel threads, so tests loading the configs of different
+    // chains at the same time would race and read each other's values (e.g. the CHAIN_ID
+    // of another test).
+    let overrides = map![
+        "rpc_url" => rpc_url.to_string(),
+        "subgraph_url_prefix" => "https://mock-subgraph-url.com/".to_string(),
+        "eoa_address" => public_address,
+        "eoa_private_key" => private_key.to_string()
+    ];
 
-    get_config(Some("./configs/".to_string()))
+    let config: Config = Figment::new()
+        .merge(Toml::file(format!("./configs/Config.{}.toml", chain_id)))
+        // Merged after the file so the overrides always win, the RPC a test passes in
+        // (e.g. an Anvil fork) must be the one that is used.
+        .merge(figment::providers::Serialized::from(&overrides, "default"))
+        // The config files do not contain the chain id, in production it comes from the
+        // CHAIN_ID environment variable. Passed separately from the overrides above so it
+        // stays a u64 (the `Serialized` provider does not coerce strings into numbers).
+        .merge(figment::providers::Serialized::from(
+            &map!["chain_id" => chain_id],
+            "default",
+        ))
+        .extract()?;
+
+    // Do a sanity check on the subgraph URL to make sure the two parts form a url, just
+    // like `get_config` does.
+    Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;
+
+    Ok(config)
 }
 
 #[cfg(test)]

@@ -117,9 +117,10 @@ mod test {
     use crate::{
         account::AccountSolvency,
         accounts::AccountsTracker,
-        config::VaultFilter,
+        config::{VaultFilter, load_configuration_file_for_test},
         lens::fetch_account,
         oracles::OraclesCache,
+        test_utils::ensure_contracts_on_fork,
         types::{
             Account, EVault, Erc4626Vault, OracleIdentifier, Vault, VaultBorrowPosition,
             VaultCollateralPosition,
@@ -237,6 +238,8 @@ mod test {
         let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
 
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
         let network = Anvil::new()
             .fork(mainnet_rpc)
             .fork_block_number(block)
@@ -247,10 +250,21 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
-        let vaults = &mut Vaults::new(
-            address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"),
-            address!("0xF5868adEedAa9Dd070e86BB40D981590C86db5A2"),
-        );
+        // Some of the configured contracts may not have been deployed yet at the forked
+        // block, inject their current code so we can just use the config addresses.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+            ],
+        )
+        .await
+        .unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
@@ -263,8 +277,8 @@ mod test {
             provider.clone(),
             &happy_filter,
             vaults,
-            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -280,8 +294,8 @@ mod test {
             provider.clone(),
             &sad_filter,
             vaults,
-            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -295,6 +309,8 @@ mod test {
         let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
 
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
         let network = Anvil::new()
             .fork(mainnet_rpc)
             .fork_block_number(block)
@@ -305,10 +321,21 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
-        let vaults = &mut Vaults::new(
-            address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"),
-            address!("0xF5868adEedAa9Dd070e86BB40D981590C86db5A2"),
-        );
+        // Some of the configured contracts may not have been deployed yet at the forked
+        // block, inject their current code so we can just use the config addresses.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+            ],
+        )
+        .await
+        .unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
@@ -321,8 +348,8 @@ mod test {
             provider.clone(),
             &happy_filter,
             vaults,
-            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -338,8 +365,8 @@ mod test {
             provider.clone(),
             &sad_filter,
             vaults,
-            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -347,30 +374,28 @@ mod test {
     }
 
     // Debug helper: fetches a single account at the latest block, logs its values and its
-    // health. The per-chain lens/EVC addresses can be found in the configs directory.
+    // health. All contract addresses are taken from the chain's configuration file.
     // Run with: <RPC_ENV>=<url> cargo test fetch_and_log -- --nocapture
     async fn fetch_and_log(
         rpc_env: &str,
-        vault_lens: Address,
-        utils_lens: Address,
-        account_lens: Address,
-        evc: Address,
-        oracle_lens: Address,
+        chain_id: u64,
         account: Address,
     ) -> (Account, AccountSolvency) {
         let rpc = std::env::var(rpc_env).unwrap_or_else(|_| panic!("{rpc_env} must be set"));
+        let config = load_configuration_file_for_test(&rpc, chain_id).unwrap();
+
         let provider = ProviderBuilder::new()
-            .connect_http(rpc.parse().expect("The RPC must be a valid url"))
+            .connect_http(config.rpc_url.clone())
             .erased();
 
-        let vaults = &mut Vaults::new(vault_lens, utils_lens);
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
         let account = fetch_account(
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            account_lens,
-            evc,
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -395,7 +420,7 @@ mod test {
 
         // Health check: fetch prices for all oracles this account depends on, then
         // calculate its solvency.
-        let oracles = OraclesCache::new(oracle_lens, None);
+        let oracles = OraclesCache::new(config.oracle_lens_address, None);
         oracles
             .ensure_prices_for(&provider, account.dependent_on())
             .await;
@@ -417,14 +442,10 @@ mod test {
 
     #[tokio::test]
     async fn fetch_and_check_single_wei_precision() {
-        // Base, addresses from configs/Config.8453.toml.
+        // Base.
         let (_, solvency) = fetch_and_log(
             "BASE_RPC",
-            address!("0x601F023CD063324DdbCADa69460e969fb97e98b9"),
-            address!("0x1cd5afC7292D41D812A1D73332F29B1Aa8C70Bf1"),
-            address!("0x2C29f22D33823D69a8dA9F711B10F58bdDFd4c05"),
-            address!("0x5301c7dD20bD945D2013b48ed0DEE3A284ca8989"),
-            address!("0xCE85cC424d12B8074bacB81c84dA7C6DA317c4D3"),
+            8453,
             address!("0xbc2053df37acd48a36a6d6b1b70a47aafc020c1c"),
         )
         .await;
@@ -439,14 +460,10 @@ mod test {
         //     .with_env_filter(EnvFilter::new("debug,liquidation_bot_v3=debug"))
         //     .init();
 
-        // Mainnet, addresses from configs/Config.1.toml.
+        // Mainnet.
         let (account, _) = fetch_and_log(
             "MAINNET_RPC",
-            address!("0x4A7Bc3bf4db4dD6eEE1b2c27A7C9e35A6fD14bDE"),
-            address!("0xF5868adEedAa9Dd070e86BB40D981590C86db5A2"),
-            address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
-            address!("0x30E6dFB84782A31d561536f64F47231451F7b48A"),
+            1,
             address!("0xb6cBe8b123392eF6aA72897Bb85bD6515d2e8dB6"),
         )
         .await;

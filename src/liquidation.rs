@@ -441,7 +441,7 @@ mod test {
         let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
         let account = address!("0x68e9669391AD60B5D72B996a9bd523c3962D2883");
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+        let liquidator_address = config.liquidator_address;
 
         // Fetch an account.
         let account = fetch_account(
@@ -485,7 +485,7 @@ mod test {
             prepare_liquidation(
                 &provider.clone(),
                 &EulerSwapApi::new(
-                    "https://swap.euler.finance".parse().unwrap(),
+                    config.swap_url.clone(),
                     provider.erased(),
                     config.chain_id,
                     liquidator_address,
@@ -493,10 +493,7 @@ mod test {
                     config.swapper_address,
                     config.wrapped_native_asset_address,
                     "1", // Max slippage.
-                    EulerPricingApi::new(
-                        "https://v3.euler.finance".parse().unwrap(),
-                        config.chain_id
-                    ),
+                    EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
                 ),
                 pyth,
                 liquidator_address,
@@ -520,7 +517,7 @@ mod test {
         let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
         let account = address!("0xa8847b8bf827A9A8d03b2749Da4bC230A16c59d8");
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+        let liquidator_address = config.liquidator_address;
 
         // Fetch an account.
         let account = fetch_account(
@@ -564,7 +561,7 @@ mod test {
             prepare_liquidation(
                 &provider.clone(),
                 &EulerSwapApi::new(
-                    "https://swap.euler.finance".parse().unwrap(),
+                    config.swap_url.clone(),
                     provider.erased(),
                     config.chain_id,
                     liquidator_address,
@@ -572,10 +569,7 @@ mod test {
                     config.swapper_address,
                     config.wrapped_native_asset_address,
                     "1", // Max slippage.
-                    EulerPricingApi::new(
-                        "https://v3.euler.finance".parse().unwrap(),
-                        config.chain_id
-                    ),
+                    EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
                 ),
                 pyth,
                 liquidator_address,
