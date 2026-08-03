@@ -113,7 +113,6 @@ mod test {
         primitives::{Address, U256, address},
         providers::{Provider, ProviderBuilder},
     };
-    use tracing_subscriber::EnvFilter;
 
     use crate::{
         account::AccountSolvency,
@@ -121,7 +120,10 @@ mod test {
         config::VaultFilter,
         lens::fetch_account,
         oracles::OraclesCache,
-        types::{Account, OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition},
+        types::{
+            Account, EVault, Erc4626Vault, OracleIdentifier, Vault, VaultBorrowPosition,
+            VaultCollateralPosition,
+        },
         vaults::Vaults,
     };
 
@@ -187,30 +189,27 @@ mod test {
             vec![
                 VaultCollateralPosition {
                     amount: U256::from(100_000_000),
-                    vault: Arc::from(Vault {
+                    vault: Vault::Erc4626(Arc::from(Erc4626Vault {
                         address: Address::random(),
                         asset: oracle.base_asset,
-                        unit_of_account: oracle.quote_asset,
-                        borrow_interest_rate: (),
-                        supply_interest_rate: (),
-                        adapter: oracle.adapter,
-                        ltvs: HashMap::new(),
                         shares_to_underlying_ratio: U256::from(100_000),
-                    }),
+                    })),
                 },
                 VaultCollateralPosition::generate_random(),
             ],
             vec![VaultBorrowPosition {
                 amount: U256::from(100_000_000),
-                vault: Arc::from(Vault {
-                    address: Address::random(),
-                    asset: Address::random(),
+                vault: Arc::from(EVault {
+                    erc4626: Erc4626Vault {
+                        address: Address::random(),
+                        asset: Address::random(),
+                        shares_to_underlying_ratio: U256::from(100_000),
+                    },
                     unit_of_account: oracle.quote_asset,
                     borrow_interest_rate: (),
                     supply_interest_rate: (),
                     adapter: oracle.adapter,
                     ltvs: HashMap::new(),
-                    shares_to_underlying_ratio: U256::from(100_000),
                 }),
             }],
         );
@@ -248,7 +247,10 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        let vaults = &mut Vaults::new(
+            address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"),
+            address!("0xF5868adEedAa9Dd070e86BB40D981590C86db5A2"),
+        );
 
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
@@ -303,7 +305,10 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        let vaults = &mut Vaults::new(
+            address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"),
+            address!("0xF5868adEedAa9Dd070e86BB40D981590C86db5A2"),
+        );
 
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
@@ -347,6 +352,7 @@ mod test {
     async fn fetch_and_log(
         rpc_env: &str,
         vault_lens: Address,
+        utils_lens: Address,
         account_lens: Address,
         evc: Address,
         oracle_lens: Address,
@@ -357,7 +363,7 @@ mod test {
             .connect_http(rpc.parse().expect("The RPC must be a valid url"))
             .erased();
 
-        let vaults = &mut Vaults::new(vault_lens);
+        let vaults = &mut Vaults::new(vault_lens, utils_lens);
 
         let account = fetch_account(
             provider.clone(),
@@ -380,7 +386,9 @@ mod test {
         for c in &account.collaterals {
             println!(
                 "collateral: vault={} asset={} amount={}",
-                c.vault.address, c.vault.asset, c.amount
+                c.vault.erc4626().address,
+                c.vault.erc4626().asset,
+                c.amount
             );
         }
         println!("full: {account:#?}");
@@ -413,6 +421,7 @@ mod test {
         let (_, solvency) = fetch_and_log(
             "BASE_RPC",
             address!("0x601F023CD063324DdbCADa69460e969fb97e98b9"),
+            address!("0x1cd5afC7292D41D812A1D73332F29B1Aa8C70Bf1"),
             address!("0x2C29f22D33823D69a8dA9F711B10F58bdDFd4c05"),
             address!("0x5301c7dD20bD945D2013b48ed0DEE3A284ca8989"),
             address!("0xCE85cC424d12B8074bacB81c84dA7C6DA317c4D3"),
@@ -425,15 +434,16 @@ mod test {
 
     #[tokio::test]
     async fn fetch_and_check_single_borrow_and_collateral() {
-        // Configure tracing.
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("debug,liquidation_bot_v3=debug"))
-            .init();
+        // // Configure tracing.
+        // tracing_subscriber::fmt()
+        //     .with_env_filter(EnvFilter::new("debug,liquidation_bot_v3=debug"))
+        //     .init();
 
         // Mainnet, addresses from configs/Config.1.toml.
         let (account, _) = fetch_and_log(
             "MAINNET_RPC",
             address!("0x4A7Bc3bf4db4dD6eEE1b2c27A7C9e35A6fD14bDE"),
+            address!("0xF5868adEedAa9Dd070e86BB40D981590C86db5A2"),
             address!("0x2C5C13e4600AAbf77c1FdaA7b63d2D654DdFf7C5"),
             address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
             address!("0x30E6dFB84782A31d561536f64F47231451F7b48A"),

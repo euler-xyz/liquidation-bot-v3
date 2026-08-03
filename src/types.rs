@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ops::Deref,
     sync::{Arc, RwLock},
 };
 
@@ -7,16 +8,63 @@ use alloy::primitives::{Address, Bytes, U256};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+/// A plain ERC4626 vault. These can only ever be used as collateral, never as the
+/// borrow (controller) vault.
 #[derive(Clone, Debug, Serialize)]
-pub struct Vault {
+pub struct Erc4626Vault {
     pub address: Address,
     pub asset: Address,
+    pub shares_to_underlying_ratio: U256,
+}
+
+/// An Euler vault. An EVault is itself an ERC4626 vault but extends it with
+/// borrowing related features. Only an EVault can be the borrow (controller) vault.
+#[derive(Clone, Debug, Serialize)]
+pub struct EVault {
+    #[serde(flatten)]
+    pub erc4626: Erc4626Vault,
     pub unit_of_account: Address,
     pub borrow_interest_rate: (),
     pub supply_interest_rate: (),
-    pub shares_to_underlying_ratio: U256,
     pub adapter: Address,
     pub ltvs: HashMap<Address, Ltv>,
+}
+
+/// An EVault IS-A ERC4626 vault, so allow direct access to the common fields
+/// (`address`, `asset`, `shares_to_underlying_ratio`).
+impl Deref for EVault {
+    type Target = Erc4626Vault;
+
+    fn deref(&self) -> &Self::Target {
+        &self.erc4626
+    }
+}
+
+/// Any vault known to the bot. Both variants are ERC4626 vaults, use
+/// [`Vault::erc4626`] to access the common fields.
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum Vault {
+    EVault(Arc<EVault>),
+    Erc4626(Arc<Erc4626Vault>),
+}
+
+impl Vault {
+    /// The common ERC4626 fields, available for every vault.
+    pub fn erc4626(&self) -> &Erc4626Vault {
+        match self {
+            Vault::EVault(vault) => &vault.erc4626,
+            Vault::Erc4626(vault) => vault,
+        }
+    }
+
+    /// Returns the EVault if this vault is one. Only EVaults can be borrowed from.
+    pub fn as_evault(&self) -> Option<&Arc<EVault>> {
+        match self {
+            Vault::EVault(vault) => Some(vault),
+            Vault::Erc4626(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -135,13 +183,15 @@ impl AccountStatus {
 #[derive(Clone, Debug, Serialize)]
 pub struct VaultCollateralPosition {
     pub amount: U256,
-    pub vault: Arc<Vault>,
+    // Any vault can serve as collateral.
+    pub vault: Vault,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct VaultBorrowPosition {
     pub amount: U256,
-    pub vault: Arc<Vault>,
+    // Only an EVault can be borrowed from, which this encodes statically.
+    pub vault: Arc<EVault>,
 }
 
 impl Account {
@@ -251,7 +301,7 @@ impl VaultBorrowPosition {
     pub fn generate_random() -> Self {
         VaultBorrowPosition {
             amount: U256::from(100_000_000),
-            vault: Arc::from(Vault::generate_random()),
+            vault: Arc::from(EVault::generate_random()),
         }
     }
 }
@@ -261,21 +311,30 @@ impl VaultCollateralPosition {
     pub fn generate_random() -> Self {
         VaultCollateralPosition {
             amount: U256::from(100_000_000),
-            vault: Arc::from(Vault::generate_random()),
+            vault: Vault::EVault(Arc::from(EVault::generate_random())),
         }
     }
 }
 
 #[cfg(test)]
-impl Vault {
-    pub fn generate_random() -> Vault {
-        Vault {
+impl Erc4626Vault {
+    pub fn generate_random() -> Erc4626Vault {
+        Erc4626Vault {
             address: Address::random(),
             asset: Address::random(),
+            shares_to_underlying_ratio: U256::from(100_000),
+        }
+    }
+}
+
+#[cfg(test)]
+impl EVault {
+    pub fn generate_random() -> EVault {
+        EVault {
+            erc4626: Erc4626Vault::generate_random(),
             unit_of_account: Address::random(),
             borrow_interest_rate: (),
             supply_interest_rate: (),
-            shares_to_underlying_ratio: U256::from(100_000),
             adapter: Address::random(),
             ltvs: HashMap::new(),
         }

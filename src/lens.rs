@@ -1,5 +1,5 @@
 use alloy::{primitives::Address, providers::DynProvider, sol};
-use anyhow::{Error, Result};
+use anyhow::{Error, Result, anyhow};
 use tokio::time::Instant;
 use tracing::debug;
 
@@ -150,12 +150,26 @@ pub async fn fetch_account(
                 return Err(FetchAccountError::FilteredOut(v.vault));
             }
 
+            let vault = vaults
+                .get_or_fetch(&provider, v.vault)
+                .await
+                .map_err(FetchAccountError::Other)?;
+
+            // Only an EVault can be borrowed from.
+            let evault = vault
+                .as_evault()
+                .ok_or_else(|| {
+                    FetchAccountError::Other(anyhow!(
+                        "Account {} has a borrow on vault {} which is not an EVault, this should be impossible",
+                        account,
+                        v.vault
+                    ))
+                })?
+                .clone();
+
             borrows.push(VaultBorrowPosition {
                 amount: v.borrowed,
-                vault: vaults
-                    .get_or_fetch(&provider, v.vault)
-                    .await
-                    .map_err(FetchAccountError::Other)?,
+                vault: evault,
             });
         }
 

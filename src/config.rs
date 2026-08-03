@@ -80,6 +80,9 @@ pub struct Config {
     // The vault lens contract.
     pub vault_lens_address: Address,
 
+    // The utils lens contract.
+    pub utils_lens_address: Address,
+
     // The liquidator contract.
     pub liquidator_address: Address,
 
@@ -175,6 +178,7 @@ impl Config {
         check_address(&provider, self.oracle_lens_address, "oracle lens").await?;
         check_address(&provider, self.account_lens_address, "account lens").await?;
         check_address(&provider, self.vault_lens_address, "vault lens").await?;
+        check_address(&provider, self.utils_lens_address, "utils lens").await?;
         check_address(&provider, self.liquidator_address, "liquidator").await?;
 
         // Ensure the liquidator is configured correctly.
