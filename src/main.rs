@@ -842,6 +842,7 @@ mod test {
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
     };
     use tokio::sync::broadcast;
+    use tracing_subscriber::EnvFilter;
     struct MockSwapProvider;
 
     impl SwapQuoteProvider for MockSwapProvider {

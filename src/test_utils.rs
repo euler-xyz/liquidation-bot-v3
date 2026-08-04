@@ -1,11 +1,14 @@
 //! Helpers that are shared between tests.
 
 use alloy::{
-    primitives::Address,
+    primitives::{Address, B256, U256},
     providers::{DynProvider, Provider, ProviderBuilder, ext::AnvilApi},
 };
 use anyhow::{Context, Result, bail};
 use reqwest::Url;
+
+/// How many storage slots get copied along when a contract is injected into a fork.
+const STORAGE_SLOTS_TO_COPY: u64 = 16;
 
 /// Ensures that all the given contracts exist on an Anvil fork.
 ///
@@ -16,9 +19,14 @@ use reqwest::Url;
 /// without having to worry about whether a specific contract already existed at the
 /// forked block.
 ///
-/// NOTE: This only copies code, not storage. So it only works for stateless contracts
-/// (like the lenses) or contracts whose configuration lives in immutables (which are part
-/// of the code).
+/// Besides the code, the first [`STORAGE_SLOTS_TO_COPY`] plain storage slots are copied
+/// as well. Contracts may keep configuration in storage next to their immutables (the
+/// liquidator for example stores the swapper and EVC addresses it actually calls in
+/// storage), and injected code alone would read those as zero.
+///
+/// NOTE: Only plain slots are copied, state in mappings or dynamic arrays is not. So this
+/// only works for stateless contracts (like the lenses) or contracts whose configuration
+/// lives in immutables and/or simple storage slots (like the liquidator).
 pub async fn ensure_contracts_on_fork(
     fork: &DynProvider,
     live_rpc_url: &Url,
@@ -54,6 +62,29 @@ pub async fn ensure_contracts_on_fork(
         fork.anvil_set_code(*address, code)
             .await
             .with_context(|| format!("While injecting the code of {address} into the fork"))?;
+
+        // Copy the first few plain storage slots along with the code, skipping slots that
+        // hold nothing. For stateless contracts this is a no-op.
+        for slot in 0..STORAGE_SLOTS_TO_COPY {
+            let slot = U256::from(slot);
+
+            let value = live
+                .get_storage_at(*address, slot)
+                .await
+                .with_context(|| {
+                    format!("While fetching storage slot {slot} of {address} from the live chain")
+                })?;
+
+            if value.is_zero() {
+                continue;
+            }
+
+            fork.anvil_set_storage_at(*address, slot, B256::from(value))
+                .await
+                .with_context(|| {
+                    format!("While injecting storage slot {slot} of {address} into the fork")
+                })?;
+        }
     }
 
     Ok(())

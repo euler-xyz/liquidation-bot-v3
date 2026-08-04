@@ -373,20 +373,58 @@ mod test {
         .expect_err("Expected this to get filtered out by the whitelist");
     }
 
-    // Debug helper: fetches a single account at the latest block, logs its values and its
-    // health. All contract addresses are taken from the chain's configuration file.
+    // Debug helper: fetches a single account, logs its values and its health. All
+    // contract addresses are taken from the chain's configuration file. If a block number
+    // is given the chain is forked at that block, otherwise the live chain is used at the
+    // latest block.
     // Run with: <RPC_ENV>=<url> cargo test fetch_and_log -- --nocapture
     async fn fetch_and_log(
         rpc_env: &str,
         chain_id: u64,
+        block: Option<u64>,
         account: Address,
     ) -> (Account, AccountSolvency) {
         let rpc = std::env::var(rpc_env).unwrap_or_else(|_| panic!("{rpc_env} must be set"));
         let config = load_configuration_file_for_test(&rpc, chain_id).unwrap();
 
-        let provider = ProviderBuilder::new()
-            .connect_http(config.rpc_url.clone())
-            .erased();
+        // Keeps the Anvil instance alive for the duration of the function when forking.
+        let (provider, _network) = match block {
+            Some(block) => {
+                let network = Anvil::new()
+                    .fork(rpc)
+                    .fork_block_number(block)
+                    .try_spawn()
+                    .unwrap();
+
+                let provider = ProviderBuilder::new()
+                    .connect_http(network.endpoint_url())
+                    .erased();
+
+                // Some of the configured contracts may not have been deployed yet at the
+                // forked block, inject their current code so we can just use the config
+                // addresses.
+                ensure_contracts_on_fork(
+                    &provider,
+                    &config.rpc_url,
+                    &[
+                        config.vault_lens_address,
+                        config.utils_lens_address,
+                        config.account_lens_address,
+                        config.oracle_lens_address,
+                    ],
+                )
+                .await
+                .unwrap();
+
+                (provider, Some(network))
+            }
+            None => (
+                ProviderBuilder::new()
+                    .connect_http(config.rpc_url.clone())
+                    .erased(),
+                None,
+            ),
+        };
 
         let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
@@ -446,6 +484,7 @@ mod test {
         let (_, solvency) = fetch_and_log(
             "BASE_RPC",
             8453,
+            None,
             address!("0xbc2053df37acd48a36a6d6b1b70a47aafc020c1c"),
         )
         .await;
@@ -455,15 +494,11 @@ mod test {
 
     #[tokio::test]
     async fn fetch_and_check_single_borrow_and_collateral() {
-        // // Configure tracing.
-        // tracing_subscriber::fmt()
-        //     .with_env_filter(EnvFilter::new("debug,liquidation_bot_v3=debug"))
-        //     .init();
-
         // Mainnet.
         let (account, _) = fetch_and_log(
             "MAINNET_RPC",
             1,
+            Some(25679728),
             address!("0xb6cBe8b123392eF6aA72897Bb85bD6515d2e8dB6"),
         )
         .await;

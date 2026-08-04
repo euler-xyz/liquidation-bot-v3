@@ -468,8 +468,9 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                 }
                 Err(err) => {
                     tracing::debug!(
-                        "Error while simulating quote execution and liquidation, err: {:?}",
-                        err
+                        "Error while simulating quote execution and liquidation, err: {:?}, call: {:?}",
+                        err,
+                        liquidation.clone().into_transaction(self.profit_receiver)
                     );
 
                     let attempt_error = match err {
