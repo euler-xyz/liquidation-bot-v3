@@ -127,7 +127,7 @@ pub async fn prepare_liquidation(
                         // TODO: this should be the signer address.
                         liquidator_address,
                         account.address,
-                        asset.vault.address,
+                        asset.vault.erc4626().address,
                     )
                     .value(pyth.cost)
                     .call()
@@ -153,7 +153,11 @@ pub async fn prepare_liquidation(
             }
             None => {
                 let liq_result = match vault
-                    .checkLiquidation(liquidator_address, account.address, asset.vault.address)
+                    .checkLiquidation(
+                        liquidator_address,
+                        account.address,
+                        asset.vault.erc4626().address,
+                    )
                     .call()
                     .await
                 {
@@ -181,7 +185,7 @@ pub async fn prepare_liquidation(
             continue;
         }
 
-        let vault = Vault::new(asset.vault.address, provider);
+        let vault = Vault::new(asset.vault.erc4626().address, provider);
 
         let max_assets = match vault.convertToAssets(max_yield).call().await {
             Ok(max_assets) => max_assets,
@@ -300,8 +304,8 @@ impl PreparedLiquidation {
             violatorAddress: self.account.address,
             vault: self.borrow.vault.address,
             borrowedAsset: self.borrow.vault.asset,
-            collateralVault: self.collateral.vault.address,
-            collateralAsset: self.collateral.vault.asset,
+            collateralVault: self.collateral.vault.erc4626().address,
+            collateralAsset: self.collateral.vault.erc4626().asset,
             repayAmount: self.repay_amount,
             seizedCollateralAmount: self.seized_collateral_amount,
             receiver,
@@ -433,11 +437,11 @@ mod test {
         let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 
         // Our singleton vault store.
-        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
         let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
         let account = address!("0x68e9669391AD60B5D72B996a9bd523c3962D2883");
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+        let liquidator_address = config.liquidator_address;
 
         // Fetch an account.
         let account = fetch_account(
@@ -481,7 +485,7 @@ mod test {
             prepare_liquidation(
                 &provider.clone(),
                 &EulerSwapApi::new(
-                    "https://swap.euler.finance".parse().unwrap(),
+                    config.swap_url.clone(),
                     provider.erased(),
                     config.chain_id,
                     liquidator_address,
@@ -489,10 +493,7 @@ mod test {
                     config.swapper_address,
                     config.wrapped_native_asset_address,
                     "1", // Max slippage.
-                    EulerPricingApi::new(
-                        "https://v3.euler.finance".parse().unwrap(),
-                        config.chain_id
-                    ),
+                    EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
                 ),
                 pyth,
                 liquidator_address,
@@ -512,11 +513,11 @@ mod test {
         let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 
         // Our singleton vault store.
-        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
         let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
         let account = address!("0xa8847b8bf827A9A8d03b2749Da4bC230A16c59d8");
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
+        let liquidator_address = config.liquidator_address;
 
         // Fetch an account.
         let account = fetch_account(
@@ -560,7 +561,7 @@ mod test {
             prepare_liquidation(
                 &provider.clone(),
                 &EulerSwapApi::new(
-                    "https://swap.euler.finance".parse().unwrap(),
+                    config.swap_url.clone(),
                     provider.erased(),
                     config.chain_id,
                     liquidator_address,
@@ -568,10 +569,7 @@ mod test {
                     config.swapper_address,
                     config.wrapped_native_asset_address,
                     "1", // Max slippage.
-                    EulerPricingApi::new(
-                        "https://v3.euler.finance".parse().unwrap(),
-                        config.chain_id
-                    ),
+                    EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
                 ),
                 pyth,
                 liquidator_address,
@@ -591,7 +589,7 @@ mod test {
         let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
 
         // Our singleton vault store.
-        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
         let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
         let account = address!("0x421c4869095B637d59f25b427904D792dcBe0260");
@@ -628,19 +626,23 @@ mod into_transaction_test {
     use super::{Liquidator, PreparedLiquidation};
     use crate::{
         pyth::PythFeedInput,
-        types::{Account, Vault, VaultBorrowPosition, VaultCollateralPosition},
+        types::{
+            Account, EVault, Erc4626Vault, Vault, VaultBorrowPosition, VaultCollateralPosition,
+        },
     };
 
     fn liquidation(pyth: Option<PythFeedInput>) -> (PreparedLiquidation, Address) {
         let liquidator = Address::random();
         let make_vault = || {
-            Arc::new(Vault {
-                address: Address::random(),
-                asset: Address::random(),
+            Arc::new(EVault {
+                erc4626: Erc4626Vault {
+                    address: Address::random(),
+                    asset: Address::random(),
+                    shares_to_underlying_ratio: U256::from(1),
+                },
                 unit_of_account: Address::random(),
                 borrow_interest_rate: (),
                 supply_interest_rate: (),
-                shares_to_underlying_ratio: U256::from(1),
                 adapter: Address::random(),
                 ltvs: HashMap::new(),
             })
@@ -652,7 +654,7 @@ mod into_transaction_test {
         };
         let collateral = VaultCollateralPosition {
             amount: U256::from(100),
-            vault: make_vault(),
+            vault: Vault::EVault(make_vault()),
         };
 
         let liq = PreparedLiquidation::new_for_test(

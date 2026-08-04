@@ -310,7 +310,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         // NOTE: Unsure if this functionality should live in this provider, as its not actually
         // providing a swap quote, but its only here since this also has the PriceAsset trait.
         // We might want to move this somewhere else.
-        if liq.borrow().vault.asset == liq.collateral().vault.asset {
+        if liq.borrow().vault.asset == liq.collateral().vault.erc4626().asset {
             // The amount we need to repay is more than the amount of assets.
             let profit = match same_asset_profit(liq.seized_collateral_amount(), liq.repay_amount())
             {
@@ -322,7 +322,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             let profit_in_native = match self
                 .pricing
                 .quote(
-                    liq.collateral().vault.asset,
+                    liq.collateral().vault.erc4626().asset,
                     profit,
                     self.wrapped_native_asset,
                 )
@@ -367,7 +367,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
         // Build the params to call the swap api with for this liquidation.
         let params = &SwapParams {
             chain_id: self.chain_id.to_string(),
-            token_in: liq.collateral().vault.asset,
+            token_in: liq.collateral().vault.erc4626().asset,
             token_out: liq.borrow().vault.asset,
             receiver: self.swapper_address,
             vault_in: Address::ZERO,
@@ -434,7 +434,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                     let profit_in_native = match self
                         .pricing
                         .quote(
-                            liq.collateral().vault.asset,
+                            liq.collateral().vault.erc4626().asset,
                             profit,
                             self.wrapped_native_asset,
                         )
@@ -468,8 +468,9 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                 }
                 Err(err) => {
                     tracing::debug!(
-                        "Error while simulating quote execution and liquidation, err: {:?}",
-                        err
+                        "Error while simulating quote execution and liquidation, err: {:?}, call: {:?}",
+                        err,
+                        liquidation.clone().into_transaction(self.profit_receiver)
                     );
 
                     let attempt_error = match err {
@@ -516,7 +517,9 @@ mod test {
     use crate::{
         liquidation::{ExpectedProfit, PreparedLiquidation},
         prices::{PriceAsset, PricingError},
-        types::{Account, Vault, VaultBorrowPosition, VaultCollateralPosition},
+        types::{
+            Account, EVault, Erc4626Vault, Vault, VaultBorrowPosition, VaultCollateralPosition,
+        },
     };
 
     // ── same_asset_profit ───────────────────────────────────────────────────
@@ -587,13 +590,15 @@ mod test {
 
     fn same_asset_liquidation(asset: Address, repay: U256, seized: U256) -> PreparedLiquidation {
         let make_vault = || {
-            Arc::new(Vault {
-                address: Address::random(),
-                asset,
+            Arc::new(EVault {
+                erc4626: Erc4626Vault {
+                    address: Address::random(),
+                    asset,
+                    shares_to_underlying_ratio: U256::from(1),
+                },
                 unit_of_account: Address::random(),
                 borrow_interest_rate: (),
                 supply_interest_rate: (),
-                shares_to_underlying_ratio: U256::from(1),
                 adapter: Address::random(),
                 ltvs: HashMap::new(),
             })
@@ -605,7 +610,7 @@ mod test {
         };
         let collateral = VaultCollateralPosition {
             amount: seized,
-            vault: make_vault(),
+            vault: Vault::EVault(make_vault()),
         };
 
         PreparedLiquidation::new_for_test(

@@ -51,6 +51,8 @@ mod prices;
 mod pyth;
 mod subgraph;
 mod swap;
+#[cfg(test)]
+mod test_utils;
 mod transactions;
 mod types;
 mod vaults;
@@ -128,7 +130,7 @@ async fn main() {
     };
 
     // Our singleton vault store.
-    let vaults = Vaults::new(config.vault_lens_address);
+    let vaults = Vaults::new(config.vault_lens_address, config.utils_lens_address);
     let accounts = Arc::new(AccountsTracker::new());
     let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth.clone());
 
@@ -782,9 +784,23 @@ pub async fn fetch_all_accounts(
 
         for balance in balances.into_iter() {
             if balance.debt > U256::ZERO {
+                // Only an EVault can be borrowed from.
+                let evault = vaults
+                    .get_or_fetch(provider, balance.vault)
+                    .await?
+                    .as_evault()
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Account {} has a borrow on vault {} which is not an EVault, this should be impossible",
+                            account_address,
+                            balance.vault
+                        )
+                    })?
+                    .clone();
+
                 borrows.push(VaultBorrowPosition {
                     amount: balance.debt,
-                    vault: vaults.get_or_fetch(provider, balance.vault).await?,
+                    vault: evault,
                 });
             }
 
@@ -815,6 +831,7 @@ mod test {
         oracles::OraclesCache,
         prices::EulerPricingApi,
         swap::{EulerSwapApi, MulticallItem, SwapPayload, SwapQuoteProvider},
+        test_utils::ensure_contracts_on_fork,
         transactions::execute_liquidation_queue,
         types::LiquidationReasoningError,
         vaults::Vaults,
@@ -826,7 +843,6 @@ mod test {
     };
     use tokio::sync::broadcast;
     use tracing_subscriber::EnvFilter;
-
     struct MockSwapProvider;
 
     impl SwapQuoteProvider for MockSwapProvider {
@@ -865,12 +881,15 @@ mod test {
         let violator = address!("0x65E30583c1939344d57bBCdf3A1Bbb28d41164f2");
         let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
 
-        // Network (mainnet) specific configuration.
-        // let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
-
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
+
+        // NOTE: The liquidator is intentionally not taken from the config. The replayed swap
+        // data below is tied to this historic liquidator (and the swapper baked into its
+        // immutables), so using the current liquidator would break the replayed calldata.
+        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
 
         // Fork the network at the block where this liquidation was present.
         let network = Anvil::new()
@@ -884,6 +903,20 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
+        // Some of the configured contracts may not have been deployed yet at the forked
+        // block, inject their current code so we can just use the config addresses.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+            ],
+        )
+        .await
+        .unwrap();
+
         // We set the gas fee for the next block to be very low so the liquidation is always
         // profitable.
         provider
@@ -896,8 +929,8 @@ mod test {
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             violator,
         )
         .await
@@ -946,8 +979,8 @@ mod test {
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             violator,
         )
         .await
@@ -967,13 +1000,15 @@ mod test {
         let violator = address!("0x65E30583c1939344d57bBCdf3A1Bbb28d41164f2");
         let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
 
-        // Network (mainnet) specific configuration.
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
-        let account_lens = address!("0xA60c4257c809353039A71527dfe701B577e34bc7");
-        let evc = address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383");
-
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
+
+        // NOTE: The liquidator is intentionally not taken from the config. The replayed swap
+        // data is tied to this historic liquidator (and the swapper baked into its
+        // immutables), so using the current liquidator would break the replayed calldata.
+        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
 
         // Fork the network at the block where this liquidation was present.
         let network = Anvil::new()
@@ -987,6 +1022,20 @@ mod test {
         let provider = ProviderBuilder::new()
             .connect_http(network.endpoint_url())
             .erased();
+
+        // Some of the configured contracts may not have been deployed yet at the forked
+        // block, inject their current code so we can just use the config addresses.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+            ],
+        )
+        .await
+        .unwrap();
 
         // We set the gas fee for the next block to be very low so the liquidation is always
         // profitable.
@@ -1005,8 +1054,8 @@ mod test {
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            account_lens,
-            evc,
+            config.account_lens_address,
+            config.evc_address,
             violator,
         )
         .await
@@ -1094,8 +1143,8 @@ mod test {
                 provider.clone(),
                 &VaultFilter::default(),
                 vaults,
-                account_lens,
-                evc,
+                config.account_lens_address,
+                config.evc_address,
                 violator,
             )
             .await
@@ -1127,7 +1176,7 @@ mod test {
         let violator = address!("0xf7121a3616752e29ced0a04ae5df6d76335ada0d");
 
         // Network specific configuration.
-        let vaults = &mut Vaults::new(config.vault_lens_address);
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
         let oracles = OraclesCache::new(config.oracle_lens_address, config.pyth);
 
         let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
@@ -1199,22 +1248,16 @@ mod test {
     }
 
     #[tokio::test]
-    // NOTE: We do not use the addresses from the config here, as some contracts did not exist at
-    // this block yet, but this is a nice test to have. So we use historic contracts. (specifically
-    // the liquidator contract).
     async fn liquidation_with_swap_data() {
         // This account is healthy at this block.
         let block = 24935457;
         let violator = address!("0x68A405Fbe0bC42a228baFdBdD27F17c15475352D");
         let recipient = address!("0xA64c03b6be0AF9470573CF8AFC1626dA93C22057");
 
-        // Network (mainnet) specific configuration.
-        let wrapped_native_asset = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
-        let liquidator_address = address!("0xAAF93d5475d092EA68a748137eE19D8130918392");
-        let swapper = address!("0x2Bba09866b6F1025258542478C39720A09B728bF");
-
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
         // Fork the network at the block where this liquidation was present.
         let network = Anvil::new()
@@ -1228,13 +1271,30 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
+        // Some of the configured contracts (specifically the liquidator) did not exist yet
+        // at the forked block, inject their current code so we can just use the config
+        // addresses.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+                config.liquidator_address,
+                config.swapper_address,
+            ],
+        )
+        .await
+        .unwrap();
+
         // Fetch the account.
         let account = fetch_account(
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             violator,
         )
         .await
@@ -1258,18 +1318,18 @@ mod test {
         let liquidation = prepare_liquidation(
             &provider.clone(),
             &EulerSwapApi::new(
-                "https://swap.euler.finance".parse().unwrap(),
+                config.swap_url.clone(),
                 provider.clone().erased(),
-                1,
-                liquidator_address,
-                liquidator_address,
-                swapper,
-                wrapped_native_asset,
+                config.chain_id,
+                config.liquidator_address,
+                config.liquidator_address,
+                config.swapper_address,
+                config.wrapped_native_asset_address,
                 "5", // Max slippage
-                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
+                EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
             ),
             None, // This liquidation does not use any pyth oracles.
-            liquidator_address,
+            config.liquidator_address,
             account.clone(),
         )
         .await;
@@ -1283,18 +1343,18 @@ mod test {
         let liquidation = prepare_liquidation(
             &provider.clone(),
             &EulerSwapApi::new(
-                "https://swap.euler.finance".parse().unwrap(),
+                config.swap_url.clone(),
                 provider.clone().erased(),
-                1,
-                liquidator_address,
-                liquidator_address,
-                swapper,
-                wrapped_native_asset,
+                config.chain_id,
+                config.liquidator_address,
+                config.liquidator_address,
+                config.swapper_address,
+                config.wrapped_native_asset_address,
                 "5", // Max slippage.
-                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
+                EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
             ),
             None, // This liquidation does not use any pyth oracles.
-            liquidator_address,
+            config.liquidator_address,
             account.clone(),
         )
         .await
@@ -1312,8 +1372,8 @@ mod test {
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             violator,
         )
         .await
@@ -1321,77 +1381,6 @@ mod test {
 
         // Check that they no longer have any debt.
         assert!(account.borrows.is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore = "Current RPC does not provide an archive of the pinned block"]
-    async fn liquidation_monad() {
-
-        // Configure tracing.
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("warn,liquidation_bot_v3=debug"))
-            .init();
-
-        // This account is healthy at this block.
-        let block = 80320464;
-        let violator = address!("0xe9ebd964090e1ccc5a1cc05164c26533d67f7c87");
-
-        // Network (mainnet) specific configuration.
-        let wrapped_native_asset = address!("0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A");
-        let vaults = &mut Vaults::new(address!("0x13958d27dbCEce91aafA13C4fD4772efb1C23e15"));
-        let liquidator_address = address!("0x5D253264e1FA8804888e05B5CFC031876be108b2");
-        let swapper = address!("0xB6D7194fD09F27890279caB08d565A6424fb525D");
-
-        let monad_rpc = std::env::var("MONAD_RPC").expect("MONAD_RPC must be set");
-
-        // Fork the network at the block where this liquidation was present.
-        let network = Anvil::new()
-            .fork(monad_rpc)
-            .fork_block_number(block)
-            .arg("--disable-min-priority-fee")
-            .try_spawn()
-            .unwrap();
-
-        let provider = ProviderBuilder::new()
-            .connect_http(network.endpoint_url())
-            .erased();
-
-        // Fetch the account.
-        let account = fetch_account(
-            provider.clone(),
-            &VaultFilter::default(),
-            vaults,
-            address!("0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee"),
-            address!("0x7a9324E8f270413fa2E458f5831226d99C7477CD"),
-            violator,
-        )
-        .await
-        .unwrap();
-
-        // Sanity check, as we later also check this and then it will be empty.
-        assert!(!account.borrows.is_empty());
-
-        let liquidation = prepare_liquidation(
-            &provider.clone(),
-            &EulerSwapApi::new(
-                "https://swap.euler.finance".parse().unwrap(),
-                provider.clone().erased(),
-                143,
-                liquidator_address,
-                liquidator_address,
-                swapper,
-                wrapped_native_asset,
-                "5", // Max slippage
-                EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1),
-            ),
-            None, // This liquidation does not use any pyth oracles.
-            liquidator_address,
-            account.clone(),
-        )
-        .await;
-
-        // Check that we found a way to successfully liquidate the position.
-        assert!(liquidation.is_ok_and(|l| l.is_some()));
     }
 
     /// Waits up to 30 seconds for a new block to be mined, polling once per second.

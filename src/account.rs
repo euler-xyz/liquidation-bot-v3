@@ -7,7 +7,7 @@ use alloy::{
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 use tokio::{sync::broadcast::Sender, time};
 use tracing::{debug, error};
 
@@ -180,10 +180,13 @@ impl AccountSolvency {
 
 impl Account {
     /// Get all the vaults this account has relations to.
-    pub fn vaults(&self) -> Vec<Arc<Vault>> {
-        let mut vaults: Vec<Arc<Vault>> =
-            self.collaterals.iter().map(|a| a.vault.clone()).collect();
-        vaults.extend(self.borrows.iter().map(|d| d.vault.clone()));
+    pub fn vaults(&self) -> Vec<Vault> {
+        let mut vaults: Vec<Vault> = self.collaterals.iter().map(|a| a.vault.clone()).collect();
+        vaults.extend(
+            self.borrows
+                .iter()
+                .map(|d| Vault::EVault(d.vault.clone())),
+        );
         vaults
     }
 
@@ -200,7 +203,7 @@ impl Account {
             .collaterals
             .iter()
             .map(|asset| OracleIdentifier {
-                base_asset: asset.vault.asset,
+                base_asset: asset.vault.erc4626().asset,
                 quote_asset: debt.vault.unit_of_account,
                 adapter: debt.vault.adapter,
             })
@@ -236,15 +239,15 @@ impl Account {
             .iter()
             .map(|a| {
                 // Take into acccount the liquidation LTV.
-                match borrow.vault.ltvs.get(&a.vault.address) {
+                match borrow.vault.ltvs.get(&a.vault.erc4626().address) {
                     Some(ltv) => {
                         // Convert the amount into shares.
-                        let amount = a.amount * a.vault.shares_to_underlying_ratio / U256::from(ORACLE_PRICING_UNIT);
+                        let amount = a.amount * a.vault.erc4626().shares_to_underlying_ratio / U256::from(ORACLE_PRICING_UNIT);
 
-                        // Convert the amount into the unit_of_account. 
+                        // Convert the amount into the unit_of_account.
                         prices.get_quote(
                             &OracleIdentifier {
-                                base_asset: a.vault.asset,
+                                base_asset: a.vault.erc4626().asset,
                                 quote_asset: borrow.vault.unit_of_account,
                                 adapter: borrow .vault.adapter,
                             },
@@ -252,7 +255,7 @@ impl Account {
                         ).map(|amount| amount * ltv.current_liquidation_ltv() / U256::from(10_000))
                     },
                     None => {
-                        debug!( controller =? borrow .vault.address, asset =? a.vault.asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
+                        debug!( controller =? borrow .vault.address, asset =? a.vault.erc4626().asset, "While calculating health for account we found an account with debt but the controller does not support the asset.");
                         // This asset is not supported by the controller so its value is 0.
                         Ok(U256::ZERO)
                     }
@@ -384,7 +387,8 @@ mod test {
     use crate::{
         oracles::{ORACLE_PRICING_UNIT, OraclesCache},
         types::{
-            Account, Ltv, OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition,
+            Account, EVault, Erc4626Vault, Ltv, OracleIdentifier, Vault, VaultBorrowPosition,
+            VaultCollateralPosition,
         },
     };
 
@@ -417,14 +421,16 @@ mod test {
         adapter: Address,
         shares_to_underlying_ratio: U256,
         ltvs: HashMap<Address, Ltv>,
-    ) -> Arc<Vault> {
-        Arc::new(Vault {
-            address,
-            asset,
+    ) -> Arc<EVault> {
+        Arc::new(EVault {
+            erc4626: Erc4626Vault {
+                address,
+                asset,
+                shares_to_underlying_ratio,
+            },
             unit_of_account,
             borrow_interest_rate: (),
             supply_interest_rate: (),
-            shares_to_underlying_ratio,
             adapter,
             ltvs,
         })
@@ -476,7 +482,7 @@ mod test {
             }],
             vec![VaultCollateralPosition {
                 amount: collateral_amount,
-                vault: collateral_vault,
+                vault: Vault::EVault(collateral_vault),
             }],
         );
 
@@ -601,25 +607,25 @@ mod test {
             vec![
                 VaultCollateralPosition {
                     amount: U256::from(1),
-                    vault: vault(
+                    vault: Vault::EVault(vault(
                         Address::random(),
                         collateral_a,
                         Address::random(), // collateral's own uoa should be ignored
                         Address::random(), // collateral's own adapter should be ignored
                         unit(),
                         HashMap::new(),
-                    ),
+                    )),
                 },
                 VaultCollateralPosition {
                     amount: U256::from(1),
-                    vault: vault(
+                    vault: Vault::EVault(vault(
                         Address::random(),
                         collateral_b,
                         Address::random(),
                         Address::random(),
                         unit(),
                         HashMap::new(),
-                    ),
+                    )),
                 },
             ],
         );

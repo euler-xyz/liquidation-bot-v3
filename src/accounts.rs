@@ -117,10 +117,14 @@ mod test {
     use crate::{
         account::AccountSolvency,
         accounts::AccountsTracker,
-        config::VaultFilter,
+        config::{VaultFilter, load_configuration_file_for_test},
         lens::fetch_account,
         oracles::OraclesCache,
-        types::{Account, OracleIdentifier, Vault, VaultBorrowPosition, VaultCollateralPosition},
+        test_utils::ensure_contracts_on_fork,
+        types::{
+            Account, EVault, Erc4626Vault, OracleIdentifier, Vault, VaultBorrowPosition,
+            VaultCollateralPosition,
+        },
         vaults::Vaults,
     };
 
@@ -186,30 +190,27 @@ mod test {
             vec![
                 VaultCollateralPosition {
                     amount: U256::from(100_000_000),
-                    vault: Arc::from(Vault {
+                    vault: Vault::Erc4626(Arc::from(Erc4626Vault {
                         address: Address::random(),
                         asset: oracle.base_asset,
-                        unit_of_account: oracle.quote_asset,
-                        borrow_interest_rate: (),
-                        supply_interest_rate: (),
-                        adapter: oracle.adapter,
-                        ltvs: HashMap::new(),
                         shares_to_underlying_ratio: U256::from(100_000),
-                    }),
+                    })),
                 },
                 VaultCollateralPosition::generate_random(),
             ],
             vec![VaultBorrowPosition {
                 amount: U256::from(100_000_000),
-                vault: Arc::from(Vault {
-                    address: Address::random(),
-                    asset: Address::random(),
+                vault: Arc::from(EVault {
+                    erc4626: Erc4626Vault {
+                        address: Address::random(),
+                        asset: Address::random(),
+                        shares_to_underlying_ratio: U256::from(100_000),
+                    },
                     unit_of_account: oracle.quote_asset,
                     borrow_interest_rate: (),
                     supply_interest_rate: (),
                     adapter: oracle.adapter,
                     ltvs: HashMap::new(),
-                    shares_to_underlying_ratio: U256::from(100_000),
                 }),
             }],
         );
@@ -232,11 +233,13 @@ mod test {
 
     #[tokio::test]
     async fn filter_whitelist() {
-        let block = 24899561;
-        let account = address!("0x5Dac9ccC215b9Af65B486066786F79d9aa0043Db");
-        let vault = address!("0x9bd52f2805c6af014132874124686e7b248c2cbb");
+        let block = 25644480;
+        let account = address!("0x81633c1357ddb25d8625efb2cad26a60988475bc");
+        let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
 
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
         let network = Anvil::new()
             .fork(mainnet_rpc)
             .fork_block_number(block)
@@ -247,7 +250,21 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        // Some of the configured contracts may not have been deployed yet at the forked
+        // block, inject their current code so we can just use the config addresses.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+            ],
+        )
+        .await
+        .unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
@@ -260,8 +277,8 @@ mod test {
             provider.clone(),
             &happy_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -277,8 +294,8 @@ mod test {
             provider.clone(),
             &sad_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -287,11 +304,13 @@ mod test {
 
     #[tokio::test]
     async fn filter_blacklist() {
-        let block = 24899561;
-        let account = address!("0x5Dac9ccC215b9Af65B486066786F79d9aa0043Db");
-        let vault = address!("0x9bd52f2805c6af014132874124686e7b248c2cbb");
+        let block = 25644480;
+        let account = address!("0x81633c1357ddb25d8625efb2cad26a60988475bc");
+        let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
 
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
         let network = Anvil::new()
             .fork(mainnet_rpc)
             .fork_block_number(block)
@@ -302,7 +321,21 @@ mod test {
             .connect_http(network.endpoint_url())
             .erased();
 
-        let vaults = &mut Vaults::new(address!("0xA18D79deB85C414989D7297F23e5391703Ea66aB"));
+        // Some of the configured contracts may not have been deployed yet at the forked
+        // block, inject their current code so we can just use the config addresses.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+            ],
+        )
+        .await
+        .unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
@@ -315,8 +348,8 @@ mod test {
             provider.clone(),
             &happy_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -332,38 +365,75 @@ mod test {
             provider.clone(),
             &sad_filter,
             vaults,
-            address!("0xA60c4257c809353039A71527dfe701B577e34bc7"),
-            address!("0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"),
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
         .expect_err("Expected this to get filtered out by the whitelist");
     }
 
-    // Debug helper: fetches a single account at the latest block, logs its values and its
-    // health. The per-chain lens/EVC addresses can be found in the configs directory.
+    // Debug helper: fetches a single account, logs its values and its health. All
+    // contract addresses are taken from the chain's configuration file. If a block number
+    // is given the chain is forked at that block, otherwise the live chain is used at the
+    // latest block.
     // Run with: <RPC_ENV>=<url> cargo test fetch_and_log -- --nocapture
     async fn fetch_and_log(
         rpc_env: &str,
-        vault_lens: Address,
-        account_lens: Address,
-        evc: Address,
-        oracle_lens: Address,
+        chain_id: u64,
+        block: Option<u64>,
         account: Address,
-    ) -> AccountSolvency {
+    ) -> (Account, AccountSolvency) {
         let rpc = std::env::var(rpc_env).unwrap_or_else(|_| panic!("{rpc_env} must be set"));
-        let provider = ProviderBuilder::new()
-            .connect_http(rpc.parse().expect("The RPC must be a valid url"))
-            .erased();
+        let config = load_configuration_file_for_test(&rpc, chain_id).unwrap();
 
-        let vaults = &mut Vaults::new(vault_lens);
+        // Keeps the Anvil instance alive for the duration of the function when forking.
+        let (provider, _network) = match block {
+            Some(block) => {
+                let network = Anvil::new()
+                    .fork(rpc)
+                    .fork_block_number(block)
+                    .try_spawn()
+                    .unwrap();
+
+                let provider = ProviderBuilder::new()
+                    .connect_http(network.endpoint_url())
+                    .erased();
+
+                // Some of the configured contracts may not have been deployed yet at the
+                // forked block, inject their current code so we can just use the config
+                // addresses.
+                ensure_contracts_on_fork(
+                    &provider,
+                    &config.rpc_url,
+                    &[
+                        config.vault_lens_address,
+                        config.utils_lens_address,
+                        config.account_lens_address,
+                        config.oracle_lens_address,
+                    ],
+                )
+                .await
+                .unwrap();
+
+                (provider, Some(network))
+            }
+            None => (
+                ProviderBuilder::new()
+                    .connect_http(config.rpc_url.clone())
+                    .erased(),
+                None,
+            ),
+        };
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
 
         let account = fetch_account(
             provider.clone(),
             &VaultFilter::default(),
             vaults,
-            account_lens,
-            evc,
+            config.account_lens_address,
+            config.evc_address,
             account,
         )
         .await
@@ -379,14 +449,16 @@ mod test {
         for c in &account.collaterals {
             println!(
                 "collateral: vault={} asset={} amount={}",
-                c.vault.address, c.vault.asset, c.amount
+                c.vault.erc4626().address,
+                c.vault.erc4626().asset,
+                c.amount
             );
         }
         println!("full: {account:#?}");
 
         // Health check: fetch prices for all oracles this account depends on, then
         // calculate its solvency.
-        let oracles = OraclesCache::new(oracle_lens, None);
+        let oracles = OraclesCache::new(config.oracle_lens_address, None);
         oracles
             .ensure_prices_for(&provider, account.dependent_on())
             .await;
@@ -403,22 +475,39 @@ mod test {
             solvency.is_healthy()
         );
 
-        solvency
+        (account, solvency)
     }
 
     #[tokio::test]
     async fn fetch_and_check_single_wei_precision() {
-        // Base, addresses from configs/Config.8453.toml.
-        let solvency = fetch_and_log(
+        // Base.
+        let (_, solvency) = fetch_and_log(
             "BASE_RPC",
-            address!("0x601F023CD063324DdbCADa69460e969fb97e98b9"),
-            address!("0xe6b05A38D6a29D2C8277fA1A8BA069F1693b780C"),
-            address!("0x5301c7dD20bD945D2013b48ed0DEE3A284ca8989"),
-            address!("0xCE85cC424d12B8074bacB81c84dA7C6DA317c4D3"),
+            8453,
+            None,
             address!("0xbc2053df37acd48a36a6d6b1b70a47aafc020c1c"),
         )
         .await;
 
         assert!(solvency.is_healthy(), "Expected the account to be healthy");
+    }
+
+    #[tokio::test]
+    async fn fetch_and_check_single_borrow_and_collateral() {
+        // Mainnet.
+        let (account, _) = fetch_and_log(
+            "MAINNET_RPC",
+            1,
+            Some(25679728),
+            address!("0xb6cBe8b123392eF6aA72897Bb85bD6515d2e8dB6"),
+        )
+        .await;
+
+        assert_eq!(account.borrows.len(), 1, "Expected exactly one borrow");
+        assert_eq!(
+            account.collaterals.len(),
+            1,
+            "Expected exactly one collateral"
+        );
     }
 }
