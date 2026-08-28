@@ -101,6 +101,12 @@ pub struct Config {
     // At what interval should we re-sync all accounts and check their health.
     pub full_resync_and_check_interval_seconds: u64,
 
+    // At what interval should we refresh the cached shares_to_underlying ratio for
+    // every vault we know about. Defaults to 60s so existing config files keep
+    // working unmodified.
+    #[serde(default = "default_vault_shares_polling_interval_seconds")]
+    pub vault_shares_polling_interval_seconds: u64,
+
     // If enabled we will be forking the chain and processing the liquidations on the fork.
     #[serde(default)]
     pub simulation_mode: bool,
@@ -112,6 +118,10 @@ pub struct Config {
     // Observability settings
     #[serde(default)]
     pub enable_observability_api: bool,
+}
+
+fn default_vault_shares_polling_interval_seconds() -> u64 {
+    60
 }
 
 #[derive(Deserialize, Clone, Debug)]

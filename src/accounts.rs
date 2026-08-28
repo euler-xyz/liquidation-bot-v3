@@ -464,7 +464,7 @@ mod test {
             .await;
 
         let solvency = account
-            .calculate_health(&oracles)
+            .calculate_health(&oracles, vaults)
             .expect("Could not calculate account health");
 
         println!(

@@ -14,6 +14,7 @@ use tracing::{debug, error};
 use crate::{
     oracles::{ORACLE_PRICING_UNIT, OraclesCache},
     types::{Account, OracleIdentifier, Vault},
+    vaults::Vaults,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,7 +220,11 @@ impl Account {
         oracles
     }
 
-    pub fn calculate_health(&self, prices: &OraclesCache) -> Result<AccountSolvency> {
+    pub fn calculate_health(
+        &self,
+        prices: &OraclesCache,
+        vaults: &Vaults,
+    ) -> Result<AccountSolvency> {
         let borrow = match self.borrows.first() {
             Some(borrow) => borrow,
             None => bail!("An account with no borrow does not have a health score."),
@@ -241,8 +246,21 @@ impl Account {
                 // Take into acccount the liquidation LTV.
                 match borrow.vault.ltvs.get(&a.vault.erc4626().address) {
                     Some(ltv) => {
-                        // Convert the amount into shares.
-                        let amount = a.amount * a.vault.erc4626().shares_to_underlying_ratio / U256::from(ORACLE_PRICING_UNIT);
+                        // Convert the amount into shares. The ratio is read from the
+                        // live cache (kept fresh in the background by
+                        // `poll_vault_shares`), not from the value embedded on this
+                        // `Vault` snapshot when it was first fetched. This is a plain
+                        // in-memory lookup, never a chain call.
+                        let ratio = vaults
+                            .cached_shares_to_underlying_ratio(a.vault.erc4626().address)
+                            .unwrap_or_else(|| {
+                                debug!(
+                                    vault =? a.vault.erc4626().address,
+                                    "No cached shares_to_underlying ratio for vault, falling back to the ratio recorded when it was first fetched"
+                                );
+                                a.vault.erc4626().shares_to_underlying_ratio
+                            });
+                        let amount = a.amount * ratio / U256::from(ORACLE_PRICING_UNIT);
 
                         // Convert the amount into the unit_of_account.
                         prices.get_quote(
@@ -390,6 +408,7 @@ mod test {
             Account, EVault, Erc4626Vault, Ltv, OracleIdentifier, Vault, VaultBorrowPosition,
             VaultCollateralPosition,
         },
+        vaults::Vaults,
     };
 
     /// ORACLE_PRICING_UNIT as a U256 (1e18). A price equal to this means 1 unit of
@@ -450,7 +469,7 @@ mod test {
         collateral_amount: U256,
         shares_ratio: U256,
         collateral_supported: bool,
-    ) -> (Account, OraclesCache) {
+    ) -> (Account, OraclesCache, Vaults) {
         let uoa = Address::random();
         let adapter = Address::random();
 
@@ -504,16 +523,24 @@ mod test {
             unit(),
         );
 
-        (account, cache)
+        // `calculate_health` reads the collateral's shares_to_underlying ratio from the
+        // live `Vaults` cache, not from the value embedded on the `Vault` snapshot
+        // above (that embedded value only reflects whatever it was when first
+        // fetched). Seed the cache here so these tests exercise the same `shares_ratio`
+        // they did before this cache was introduced.
+        let vaults = Vaults::new(Address::random(), Address::random());
+        vaults.insert_ratio_for_test(collateral_vault_addr, shares_ratio);
+
+        (account, cache, vaults)
     }
 
     #[test]
     fn unhealthy_when_borrow_exceeds_discounted_collateral() {
         // 100 borrow. 100 collateral shares at 1:1 ratio => 100 underlying, then
         // the 80% liquidation LTV discounts it to 80. 100 > 80 => unhealthy.
-        let (account, cache) = fixture(U256::from(100), U256::from(100), unit(), true);
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(100), unit(), true);
 
-        let solvency = account.calculate_health(&cache).unwrap();
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
 
         assert_eq!(solvency.borrow_value, U256::from(100));
         assert_eq!(solvency.collateral_value, U256::from(80));
@@ -525,9 +552,9 @@ mod test {
     fn healthy_when_discounted_collateral_exceeds_borrow() {
         // 100 borrow. 200 collateral shares => 200 underlying, discounted 80% => 160.
         // 100 <= 160 => healthy.
-        let (account, cache) = fixture(U256::from(100), U256::from(200), unit(), true);
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(200), unit(), true);
 
-        let solvency = account.calculate_health(&cache).unwrap();
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
 
         assert_eq!(solvency.borrow_value, U256::from(100));
         assert_eq!(solvency.collateral_value, U256::from(160));
@@ -538,15 +565,33 @@ mod test {
     fn applies_shares_to_underlying_ratio() {
         // A 2e18 ratio means each share is worth 2 underlying. 100 shares => 200
         // underlying, discounted 80% => 160.
-        let (account, cache) = fixture(
+        let (account, cache, vaults) = fixture(
             U256::from(100),
             U256::from(100),
             unit() * U256::from(2),
             true,
         );
 
-        let solvency = account.calculate_health(&cache).unwrap();
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
 
+        assert_eq!(solvency.collateral_value, U256::from(160));
+    }
+
+    #[test]
+    fn calculate_health_uses_the_live_cached_ratio_not_the_fetch_time_snapshot() {
+        // Seed the fixture with a 1:1 ratio embedded on the `Vault` snapshot...
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(100), unit(), true);
+
+        // ...then simulate the background poller (`poll_vault_shares`) refreshing the
+        // cache to a new ratio, without touching the `Account`/`Vault` snapshot at all.
+        let collateral_vault_addr = account.collaterals.first().unwrap().vault.erc4626().address;
+        vaults.insert_ratio_for_test(collateral_vault_addr, unit() * U256::from(2));
+
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
+
+        // 100 shares at the *updated* 2:1 ratio => 200 underlying, discounted 80% =>
+        // 160. If `calculate_health` were still reading the stale embedded snapshot
+        // (1:1) this would be 80 instead.
         assert_eq!(solvency.collateral_value, U256::from(160));
     }
 
@@ -554,9 +599,9 @@ mod test {
     fn collateral_not_supported_by_controller_is_worthless() {
         // The controller does not list the collateral vault, so per the health
         // logic that collateral contributes zero value.
-        let (account, cache) = fixture(U256::from(100), U256::from(100), unit(), false);
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(100), unit(), false);
 
-        let solvency = account.calculate_health(&cache).unwrap();
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
 
         assert_eq!(solvency.collateral_value, U256::ZERO);
         assert!(solvency.is_unhealthy());
@@ -570,17 +615,18 @@ mod test {
             vec![VaultCollateralPosition::generate_random()],
         );
         let cache = OraclesCache::new(Address::ZERO, None);
+        let vaults = Vaults::new(Address::random(), Address::random());
 
-        assert!(account.calculate_health(&cache).is_err());
+        assert!(account.calculate_health(&cache, &vaults).is_err());
     }
 
     #[test]
     fn errors_when_a_required_price_is_missing() {
         // Same fixture, but drop one of the prices by using a fresh empty cache.
-        let (account, _) = fixture(U256::from(100), U256::from(100), unit(), true);
+        let (account, _, vaults) = fixture(U256::from(100), U256::from(100), unit(), true);
         let empty = OraclesCache::new(Address::ZERO, None);
 
-        assert!(account.calculate_health(&empty).is_err());
+        assert!(account.calculate_health(&empty, &vaults).is_err());
     }
 
     #[test]
