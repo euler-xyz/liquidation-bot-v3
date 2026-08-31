@@ -384,6 +384,10 @@ pub async fn run(
 
                 let unhealthy_accounts: Vec<_> = accounts_affected
                     .iter()
+                    // Blacklisted accounts are still tracked and kept up to date on price
+                    // changes, but must never be considered for liquidation, so skip them
+                    // before touching their status.
+                    .filter(|a| !a.is_blacklisted())
                     .filter(|a| {
                         match a.calculate_health(&oracles, &vaults) {
                             Ok(health) => {
@@ -695,6 +699,10 @@ pub async fn refresh_and_check_all(
     Ok(accounts
         .all_accounts()
         .iter()
+        // Blacklisted accounts stay tracked (and keep getting fresh prices above so the
+        // observability API can still show a live health value for them), but they must
+        // never be considered for liquidation, so skip them before touching their status.
+        .filter(|a| !a.is_blacklisted())
         .filter(|a| match a.calculate_health(oracles, vaults) {
             Ok(health) => {
                 // Update the accounts and mark them as healthy if they are.

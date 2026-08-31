@@ -360,8 +360,10 @@ mod test {
             items: vec![Address::random(), Address::random(), vault],
         };
 
-        // Fetch the account again but now with whitelist filter that should not allow it.
-        fetch_account(
+        // Fetch the account again, now with a filter that blacklists the vault it borrows
+        // from. The account should still be fetched successfully (not dropped), but marked
+        // as blacklisted for that vault.
+        let account = fetch_account(
             provider.clone(),
             &sad_filter,
             vaults,
@@ -370,7 +372,35 @@ mod test {
             account,
         )
         .await
-        .expect_err("Expected this to get filtered out by the whitelist");
+        .expect("Blacklisted accounts should still be fetched, just marked");
+
+        assert!(
+            account.is_blacklisted(),
+            "Expected the account to be marked as blacklisted"
+        );
+    }
+
+    #[test]
+    // A blacklisted account must still show up wherever the tracker reports "all" accounts
+    // (e.g. the observability API's GET /accounts), just marked, so the dashboard can
+    // display it instead of it silently vanishing.
+    fn blacklisted_accounts_still_appear_in_all_accounts() {
+        let tracker = AccountsTracker::new();
+
+        let account = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition::generate_random()],
+            vec![VaultCollateralPosition::generate_random()],
+        );
+        account.set_status(crate::types::LiquidationReasoning::Blacklisted(vec![
+            Address::random(),
+        ]));
+
+        tracker.add(account);
+
+        let all = tracker.all_accounts();
+        assert_eq!(all.len(), 1);
+        assert!(all.first().unwrap().is_blacklisted());
     }
 
     // Debug helper: fetches a single account, logs its values and its health. All

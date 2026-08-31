@@ -27,13 +27,23 @@ pub struct VaultFilter {
 }
 
 impl VaultFilter {
-    /// If the vault should be filtered out.
+    /// If the vault should be hard-filtered out, meaning the whole account should not be
+    /// tracked at all. Only whitelist mode does this: a vault outside the whitelist is out
+    /// of scope for this bot entirely. Blacklisted vaults are handled differently, see
+    /// [`VaultFilter::is_blacklisted`].
     pub fn should_filter(&self, vault: Address) -> bool {
         match self.mode {
             VaultFilterMode::None => false,
             VaultFilterMode::Whitelist => !self.items.contains(&vault),
-            VaultFilterMode::Blacklist => self.items.contains(&vault),
+            VaultFilterMode::Blacklist => false,
         }
+    }
+
+    /// If the vault is blacklisted. Unlike [`VaultFilter::should_filter`], a blacklisted
+    /// vault does not cause the account to be dropped: the account is still tracked (so it
+    /// remains visible for observability) but is marked and excluded from liquidation.
+    pub fn is_blacklisted(&self, vault: Address) -> bool {
+        matches!(self.mode, VaultFilterMode::Blacklist) && self.items.contains(&vault)
     }
 }
 

@@ -96,6 +96,11 @@ pub enum LiquidationReasoning {
     Unprofitable,
     // We can not liquidate this account as we can not find a swap path.
     NoSwapPath,
+    // The account holds a position in one or more vaults that are configured as
+    // blacklisted. It is still tracked (so it stays visible for observability) but will
+    // never be considered for liquidation. Carries the blacklisted vault address(es) that
+    // caused this.
+    Blacklisted(Vec<Address>),
     // There is an error that is preventing this account from being liquidatable.
     Error(LiquidationReasoningError),
 }
@@ -194,6 +199,20 @@ pub struct VaultBorrowPosition {
     pub vault: Arc<EVault>,
 }
 
+/// Whether a `LiquidationReasoning` value represents (or, in the case of a lens error,
+/// wraps) a blacklisted status. Recurses into `LensError`'s nested `state` since
+/// `Account::set_status` nests a newer status inside an existing lens error rather than
+/// discarding it.
+fn is_blacklisted_reasoning(reasoning: &LiquidationReasoning) -> bool {
+    match reasoning {
+        LiquidationReasoning::Blacklisted(_) => true,
+        LiquidationReasoning::Error(LiquidationReasoningError::LensError { state, .. }) => {
+            is_blacklisted_reasoning(state)
+        }
+        _ => false,
+    }
+}
+
 impl Account {
     pub fn new(
         address: Address,
@@ -249,6 +268,17 @@ impl Account {
                 }
             };
         }
+    }
+
+    /// True if this account is currently marked as blacklisted (directly, or nested inside
+    /// a lens-error status that occurred after it was blacklisted). Blacklisted accounts
+    /// stay tracked and visible via the observability API, but must never be considered for
+    /// liquidation.
+    pub fn is_blacklisted(&self) -> bool {
+        self.status
+            .read()
+            .map(|s| is_blacklisted_reasoning(&s.status))
+            .unwrap_or(false)
     }
 }
 
@@ -343,10 +373,56 @@ impl EVault {
 
 #[cfg(test)]
 mod test {
-    use alloy::primitives::{Address, U256};
+    use alloy::primitives::{Address, Bytes, U256};
     use chrono::DateTime;
 
-    use crate::types::Ltv;
+    use crate::types::{
+        Account, LensError, LiquidationReasoning, LiquidationReasoningError, Ltv,
+        VaultBorrowPosition,
+    };
+
+    #[test]
+    fn is_blacklisted_true_when_status_is_blacklisted() {
+        let account = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition::generate_random()],
+            vec![],
+        );
+        assert!(!account.is_blacklisted());
+
+        account.set_status(LiquidationReasoning::Blacklisted(vec![Address::random()]));
+        assert!(account.is_blacklisted());
+    }
+
+    #[test]
+    fn is_blacklisted_true_when_nested_inside_a_lens_error() {
+        let account = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition::generate_random()],
+            vec![],
+        );
+
+        // Simulate a lens error happening first (e.g. from a different vault's query
+        // failure)...
+        account.set_status(LiquidationReasoning::Error(
+            LiquidationReasoningError::LensError {
+                error: LensError {
+                    vault: Address::random(),
+                    query_failure_reason: Bytes::new(),
+                },
+                state: Box::from(LiquidationReasoning::Unknown),
+            },
+        ));
+        assert!(!account.is_blacklisted());
+
+        // ...then the blacklist status being set should nest inside it rather than being
+        // discarded, and still be detected as blacklisted.
+        account.set_status(LiquidationReasoning::Blacklisted(vec![Address::random()]));
+        assert!(
+            account.is_blacklisted(),
+            "Blacklisted status nested inside a lens error should still be detected"
+        );
+    }
 
     #[test]
     pub fn calculate_ramping_lltv() {
