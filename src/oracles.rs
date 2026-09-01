@@ -622,6 +622,7 @@ mod test {
         let pyth = PythConfig {
             address: MAINNET_PYTH,
             endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
+            api_key: None,
         };
 
         let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, Some(pyth));
