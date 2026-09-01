@@ -11,6 +11,7 @@ use crate::{
     accounts::AccountsTracker,
     oracles::{OracleInformation, OraclesCache},
     types::{Account, OracleIdentifier},
+    vaults::Vaults,
 };
 
 /// Contains the state and internal knowledge of this instance of the liquidation bot.
@@ -18,6 +19,7 @@ use crate::{
 pub struct BotState {
     pub accounts: Arc<AccountsTracker>,
     pub oracles: OraclesCache,
+    pub vaults: Vaults,
     pub state: tokio::sync::watch::Receiver<Heartbeat>,
     /// How long without a heartbeat from the main loop before we consider it stalled and report
     /// the bot as unhealthy.
@@ -145,7 +147,7 @@ async fn get_accounts(State(state): State<BotState>) -> Json<Vec<AccountInformat
             .iter()
             .map(|a| AccountInformation {
                 account: a.clone(),
-                health: a.calculate_health(&state.oracles).ok(),
+                health: a.calculate_health(&state.oracles, &state.vaults).ok(),
                 oracles: a.dependent_on(),
             })
             .collect(),

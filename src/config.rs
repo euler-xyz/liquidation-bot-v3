@@ -27,13 +27,23 @@ pub struct VaultFilter {
 }
 
 impl VaultFilter {
-    /// If the vault should be filtered out.
+    /// If the vault should be hard-filtered out, meaning the whole account should not be
+    /// tracked at all. Only whitelist mode does this: a vault outside the whitelist is out
+    /// of scope for this bot entirely. Blacklisted vaults are handled differently, see
+    /// [`VaultFilter::is_blacklisted`].
     pub fn should_filter(&self, vault: Address) -> bool {
         match self.mode {
             VaultFilterMode::None => false,
             VaultFilterMode::Whitelist => !self.items.contains(&vault),
-            VaultFilterMode::Blacklist => self.items.contains(&vault),
+            VaultFilterMode::Blacklist => false,
         }
+    }
+
+    /// If the vault is blacklisted. Unlike [`VaultFilter::should_filter`], a blacklisted
+    /// vault does not cause the account to be dropped: the account is still tracked (so it
+    /// remains visible for observability) but is marked and excluded from liquidation.
+    pub fn is_blacklisted(&self, vault: Address) -> bool {
+        matches!(self.mode, VaultFilterMode::Blacklist) && self.items.contains(&vault)
     }
 }
 
@@ -101,6 +111,12 @@ pub struct Config {
     // At what interval should we re-sync all accounts and check their health.
     pub full_resync_and_check_interval_seconds: u64,
 
+    // At what interval should we refresh the cached shares_to_underlying ratio for
+    // every vault we know about. Defaults to 60s so existing config files keep
+    // working unmodified.
+    #[serde(default = "default_vault_shares_polling_interval_seconds")]
+    pub vault_shares_polling_interval_seconds: u64,
+
     // If enabled we will be forking the chain and processing the liquidations on the fork.
     #[serde(default)]
     pub simulation_mode: bool,
@@ -114,10 +130,29 @@ pub struct Config {
     pub enable_observability_api: bool,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+fn default_vault_shares_polling_interval_seconds() -> u64 {
+    60
+}
+
+#[derive(Deserialize, Clone)]
 pub struct PythConfig {
     pub address: Address,
     pub endpoint: String,
+
+    // The Pyth Hermes API key, used to authenticate price update requests. Populated from
+    // the `PYTH_API_KEY` environment variable, not read from the config file.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for PythConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PythConfig")
+            .field("address", &self.address)
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl Config {
@@ -253,11 +288,17 @@ pub fn get_config(config_folder_path: Option<String>) -> Result<Config> {
         format!("Config.{}.toml", chain_id)
     };
 
-    let config: Config = Figment::new()
+    let mut config: Config = Figment::new()
         .merge(figment::providers::Serialized::from(&rpc, "default"))
         .merge(Toml::file(config_file))
         .merge(Env::raw())
         .extract()?;
+
+    // Populate the Pyth API key from the environment, if both a `PYTH_API_KEY` is set and
+    // this chain has a Pyth deployment configured.
+    if let (Ok(api_key), Some(pyth)) = (std::env::var("PYTH_API_KEY"), config.pyth.as_mut()) {
+        pyth.api_key = Some(api_key);
+    }
 
     // Do a sanity check on the sugraph URL to make sure the two parts form a url.
     Url::parse(&config.subgraph_url_prefix)?.join(&config.subgraph_url_path)?;

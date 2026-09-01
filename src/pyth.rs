@@ -52,14 +52,24 @@ sol! {
     }
 }
 
-async fn fetch_pyth(endpoint: String, ids: Vec<FixedBytes<32>>) -> Result<PythResponse> {
+async fn fetch_pyth(
+    endpoint: String,
+    ids: Vec<FixedBytes<32>>,
+    api_key: Option<String>,
+) -> Result<PythResponse> {
     let request_url = format!(
         "{}v2/updates/price/latest?ids[]={}",
         endpoint,
         ids.iter().format("&ids[]=")
     );
 
-    let body = reqwest::get(request_url.clone()).await?.text().await?;
+    let client = reqwest::Client::new();
+    let mut request = client.get(request_url.clone());
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+
+    let body = request.send().await?.text().await?;
     Ok(serde_json::from_str(&body)?)
 }
 
@@ -68,7 +78,8 @@ pub async fn fetch_pyth_data(
     pyth: PythConfig,
     ids: Vec<FixedBytes<32>>,
 ) -> Result<PythFeedInput> {
-    let data: Vec<Bytes> = fetch_pyth(pyth.endpoint, ids)
+    let api_key = pyth.api_key.clone();
+    let data: Vec<Bytes> = fetch_pyth(pyth.endpoint, ids, api_key)
         .await?
         .binary
         .data

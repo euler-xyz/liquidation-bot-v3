@@ -1,7 +1,7 @@
 use alloy::{primitives::Address, providers::DynProvider, sol};
 use anyhow::{Error, Result, anyhow};
 use tokio::time::Instant;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     Vaults,
@@ -133,6 +133,7 @@ pub async fn fetch_account(
     let mut borrows = Vec::new();
     let mut collaterals = Vec::new();
     let mut lens_error = None;
+    let mut blacklisted_vaults = Vec::new();
     for v in result.vaultAccountInfo.iter() {
         // Check if a query failure happened in the lens when attempting to fetch the information
         // for this vault.
@@ -145,32 +146,50 @@ pub async fn fetch_account(
         }
 
         if !v.borrowed.is_zero() {
-            // Check the filter to see if we should be indexing this.
+            // A whitelist excludes this vault entirely: the account is out of scope for
+            // this bot, drop it.
             if filter.should_filter(v.vault) {
                 return Err(FetchAccountError::FilteredOut(v.vault));
             }
 
-            let vault = vaults
-                .get_or_fetch(&provider, v.vault)
-                .await
-                .map_err(FetchAccountError::Other)?;
+            // A blacklisted vault does *not* drop the account. We still want it tracked (so
+            // it stays visible for observability); it is marked below and, further up the
+            // pipeline, never considered for liquidation.
+            let is_blacklisted_vault = filter.is_blacklisted(v.vault);
+            if is_blacklisted_vault {
+                blacklisted_vaults.push(v.vault);
+            }
 
-            // Only an EVault can be borrowed from.
-            let evault = vault
-                .as_evault()
-                .ok_or_else(|| {
-                    FetchAccountError::Other(anyhow!(
-                        "Account {} has a borrow on vault {} which is not an EVault, this should be impossible",
-                        account,
-                        v.vault
-                    ))
-                })?
-                .clone();
+            match vaults.get_or_fetch(&provider, v.vault).await {
+                Ok(vault) => {
+                    // Only an EVault can be borrowed from.
+                    let evault = vault
+                        .as_evault()
+                        .ok_or_else(|| {
+                            FetchAccountError::Other(anyhow!(
+                                "Account {} has a borrow on vault {} which is not an EVault, this should be impossible",
+                                account,
+                                v.vault
+                            ))
+                        })?
+                        .clone();
 
-            borrows.push(VaultBorrowPosition {
-                amount: v.borrowed,
-                vault: evault,
-            });
+                    borrows.push(VaultBorrowPosition {
+                        amount: v.borrowed,
+                        vault: evault,
+                    });
+                }
+                // Vaults often get blacklisted precisely because something is wrong with
+                // them on-chain, so a failure to fetch its metadata here is expected. Don't
+                // let it hide the whole account - track it without this borrow leg instead.
+                Err(e) if is_blacklisted_vault => {
+                    warn!(
+                        "Could not fetch metadata for blacklisted vault {} on account {}, tracking the account without this borrow position, err: {:?}",
+                        v.vault, account, e
+                    );
+                }
+                Err(e) => return Err(FetchAccountError::Other(e)),
+            }
         }
 
         if !v.assets.is_zero() {
@@ -195,6 +214,13 @@ pub async fn fetch_account(
                 state: Box::from(LiquidationReasoning::Unknown),
             },
         ));
+    }
+
+    // If any of the account's borrows are in a blacklisted vault, mark it. This is set
+    // after the lens-error status above so `Account::set_status`'s merge logic nests it
+    // correctly instead of one silently overwriting the other.
+    if !blacklisted_vaults.is_empty() {
+        account.set_status(LiquidationReasoning::Blacklisted(blacklisted_vaults));
     }
 
     Ok(account)

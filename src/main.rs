@@ -35,7 +35,7 @@ use crate::{
         Account, LiquidationReasoning, LiquidationReasoningError, VaultBorrowPosition,
         VaultCollateralPosition,
     },
-    vaults::Vaults,
+    vaults::{Vaults, poll_vault_shares},
 };
 use anyhow::{Result, anyhow};
 
@@ -170,6 +170,25 @@ async fn main() {
         });
     }
 
+    let vault_shares_provider = provider.clone();
+    {
+        let vaults = vaults.clone();
+        tokio::spawn(async move {
+            let _ = poll_vault_shares(
+                vault_shares_provider.erased(),
+                vaults,
+                tokio::time::Duration::from_secs(config.vault_shares_polling_interval_seconds),
+            )
+            .await
+            .inspect_err(|e| {
+                error!(
+                    "Polling of vault shares_to_underlying ratios had a critical error, it is no longer operating. err: {:?}",
+                    e
+                )
+            });
+        });
+    }
+
     let (liquidation_sender, liquidation_receiver) = broadcast::channel::<PreparedLiquidation>(128);
 
     // If the config specifies we should be running in simulation mode then we configure an anvil
@@ -233,6 +252,7 @@ async fn main() {
         let state = BotState {
             accounts: accounts.clone(),
             oracles: oracles.clone(),
+            vaults: vaults.clone(),
             state: rx,
             // The main loop heartbeats once per resync tick, but a tick only completes after the
             // resync pass itself (which takes a while) has finished.
@@ -364,8 +384,12 @@ pub async fn run(
 
                 let unhealthy_accounts: Vec<_> = accounts_affected
                     .iter()
+                    // Blacklisted accounts are still tracked and kept up to date on price
+                    // changes, but must never be considered for liquidation, so skip them
+                    // before touching their status.
+                    .filter(|a| !a.is_blacklisted())
                     .filter(|a| {
-                        match a.calculate_health(&oracles) {
+                        match a.calculate_health(&oracles, &vaults) {
                             Ok(health) => {
                                 // Update the accounts and mark them as healthy if they are.
                                 if health.is_healthy() {
@@ -675,7 +699,11 @@ pub async fn refresh_and_check_all(
     Ok(accounts
         .all_accounts()
         .iter()
-        .filter(|a| match a.calculate_health(oracles) {
+        // Blacklisted accounts stay tracked (and keep getting fresh prices above so the
+        // observability API can still show a live health value for them), but they must
+        // never be considered for liquidation, so skip them before touching their status.
+        .filter(|a| !a.is_blacklisted())
+        .filter(|a| match a.calculate_health(oracles, vaults) {
             Ok(health) => {
                 // Update the accounts and mark them as healthy if they are.
                 if health.is_healthy() {

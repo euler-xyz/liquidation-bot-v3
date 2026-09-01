@@ -610,7 +610,7 @@ mod test {
             .ensure_prices_for(&provider, account.dependent_on())
             .await;
 
-        dbg!(account.calculate_health(&oracles).unwrap().is_unhealthy());
+        dbg!(account.calculate_health(&oracles, vaults).unwrap().is_unhealthy());
     }
 }
 
