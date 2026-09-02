@@ -10,9 +10,9 @@ use figment::{
     util::map,
 };
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Clone, Default)]
+#[derive(Deserialize, Serialize, Clone, Default)]
 pub enum VaultFilterMode {
     #[default]
     None,
@@ -20,10 +20,53 @@ pub enum VaultFilterMode {
     Blacklist,
 }
 
-#[derive(Deserialize, Clone, Default)]
+/// A single entry in a [`VaultFilter`]'s `items` list. Accepts either a bare address (the
+/// original config format, still fully supported) or a table with an address and an optional
+/// reason explaining why the vault is listed (e.g. why it was blacklisted).
+///
+/// ```toml
+/// items = [
+///     "0xdB6856e8478DB159c383a0c4b274E259AF83cB15",
+///     { address = "0xcbc9b61177444a793b85442d3a953b90f6170b7d", reason = "Resolv - USDC depeg risk" },
+/// ]
+/// ```
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum VaultFilterItem {
+    Address(Address),
+    WithReason {
+        address: Address,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+}
+
+impl VaultFilterItem {
+    pub fn address(&self) -> Address {
+        match self {
+            VaultFilterItem::Address(address) => *address,
+            VaultFilterItem::WithReason { address, .. } => *address,
+        }
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            VaultFilterItem::Address(_) => None,
+            VaultFilterItem::WithReason { reason, .. } => reason.as_deref(),
+        }
+    }
+}
+
+impl From<Address> for VaultFilterItem {
+    fn from(address: Address) -> Self {
+        VaultFilterItem::Address(address)
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Default)]
 pub struct VaultFilter {
     pub mode: VaultFilterMode,
-    pub items: Vec<Address>,
+    pub items: Vec<VaultFilterItem>,
 }
 
 impl VaultFilter {
@@ -34,7 +77,7 @@ impl VaultFilter {
     pub fn should_filter(&self, vault: Address) -> bool {
         match self.mode {
             VaultFilterMode::None => false,
-            VaultFilterMode::Whitelist => !self.items.contains(&vault),
+            VaultFilterMode::Whitelist => !self.items.iter().any(|item| item.address() == vault),
             VaultFilterMode::Blacklist => false,
         }
     }
@@ -43,7 +86,8 @@ impl VaultFilter {
     /// vault does not cause the account to be dropped: the account is still tracked (so it
     /// remains visible for observability) but is marked and excluded from liquidation.
     pub fn is_blacklisted(&self, vault: Address) -> bool {
-        matches!(self.mode, VaultFilterMode::Blacklist) && self.items.contains(&vault)
+        matches!(self.mode, VaultFilterMode::Blacklist)
+            && self.items.iter().any(|item| item.address() == vault)
     }
 }
 
@@ -356,6 +400,35 @@ pub fn load_configuration_file_for_test(rpc_url: &str, chain_id: u64) -> anyhow:
 #[cfg(test)]
 mod test {
     use crate::config::load_configuration_file_for_test;
+
+    #[test]
+    /// `VaultFilter.items` must keep accepting the original bare-address form for backwards
+    /// compatibility, while also accepting a table form that carries an optional reason.
+    fn vault_filter_items_support_bare_address_and_optional_reason() {
+        use crate::config::{VaultFilter, VaultFilterMode};
+        use figment::{
+            Figment,
+            providers::{Format, Toml},
+        };
+
+        let toml = r#"
+            mode = "Blacklist"
+            items = [
+                "0xdB6856e8478DB159c383a0c4b274E259AF83cB15",
+                { address = "0xcbc9b61177444a793b85442d3a953b90f6170b7d", reason = "Resolv - USDC depeg risk" },
+            ]
+        "#;
+
+        let filter: VaultFilter = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("Could not parse vault filter");
+
+        assert!(matches!(filter.mode, VaultFilterMode::Blacklist));
+        assert_eq!(filter.items.len(), 2);
+        assert_eq!(filter.items[0].reason(), None);
+        assert_eq!(filter.items[1].reason(), Some("Resolv - USDC depeg risk"));
+    }
 
     #[tokio::test]
     /// Validates the configuration files against public rpcs.
