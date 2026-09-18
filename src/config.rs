@@ -430,6 +430,34 @@ mod test {
         assert_eq!(filter.items[1].reason(), Some("Resolv - USDC depeg risk"));
     }
 
+    #[test]
+    /// Loading the mainnet (chain id 1) config should pick up the `reason` strings attached
+    /// to its blacklisted vault filter entries, not just the bare addresses.
+    fn chain_1_config_loads_vault_filter_reasons() {
+        use crate::config::VaultFilterMode;
+
+        let config = load_configuration_file_for_test("https://example.com", 1)
+            .expect("Could not load the chain id 1 config");
+
+        assert_eq!(config.chain_id, 1);
+        assert!(matches!(config.vault_filter.mode, VaultFilterMode::Blacklist));
+        assert!(
+            !config.vault_filter.items.is_empty(),
+            "Expected the chain id 1 vault filter to have at least one entry"
+        );
+
+        for item in &config.vault_filter.items {
+            let reason = item
+                .reason()
+                .unwrap_or_else(|| panic!("Vault {} is missing a reason", item.address()));
+            assert!(
+                !reason.trim().is_empty(),
+                "Vault {} has an empty reason",
+                item.address()
+            );
+        }
+    }
+
     #[tokio::test]
     /// Validates the configuration files against public rpcs.
     async fn validate_configuration_files() {
