@@ -9,6 +9,7 @@ use tracing::info;
 use crate::{
     account::AccountSolvency,
     accounts::AccountsTracker,
+    config::VaultFilter,
     oracles::{OracleInformation, OraclesCache},
     types::{Account, OracleIdentifier},
     vaults::Vaults,
@@ -24,6 +25,9 @@ pub struct BotState {
     /// How long without a heartbeat from the main loop before we consider it stalled and report
     /// the bot as unhealthy.
     pub stale_after: std::time::Duration,
+    /// The vault whitelist/blacklist configuration, exposed read-only via the `/vault-filter`
+    /// route so the frontend can display it.
+    pub vault_filter: VaultFilter,
 }
 
 pub async fn serve(state: BotState) {
@@ -39,6 +43,7 @@ pub async fn serve(state: BotState) {
         .route("/health", get(health))
         .route("/accounts", get(get_accounts))
         .route("/oracles", get(get_oracles))
+        .route("/vault-filter", get(get_vault_filter))
         .layer(ServiceBuilder::new().layer(cors))
         .with_state(state);
 
@@ -157,4 +162,10 @@ async fn get_accounts(State(state): State<BotState>) -> Json<Vec<AccountInformat
 /// Exposes all details on oracles that the bot is aware of.
 async fn get_oracles(State(state): State<BotState>) -> Json<Vec<OracleInformation>> {
     Json(state.oracles.all())
+}
+
+/// Exposes the vault whitelist/blacklist configuration this instance is running with, so the
+/// frontend can display which vaults are filtered and why.
+async fn get_vault_filter(State(state): State<BotState>) -> Json<VaultFilter> {
+    Json(state.vault_filter)
 }

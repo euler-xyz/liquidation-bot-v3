@@ -259,6 +259,7 @@ async fn main() {
             stale_after: tokio::time::Duration::from_secs(
                 config.full_resync_and_check_interval_seconds * 2,
             ),
+            vault_filter: config.vault_filter.clone(),
         };
 
         tokio::spawn(async move {

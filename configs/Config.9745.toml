@@ -24,6 +24,6 @@ endpoint = "https://hermes.pyth.network/"
 [vault_filter]
 mode = "Blacklist"
 items = [
-    "0x8adb906421f65c27155f44f1829ca1e5b024c3f6", # Re7 Labs xUSD - xUSD
-    "0xf675fbe777e992f5d5d84adf41161dc0f20104a6", # Re7 Labs xUSD - USDT0
+    { address = "0x8adb906421f65c27155f44f1829ca1e5b024c3f6", reason = "Part of a lending cluster left with bad debt after Stream Finance's synthetic dollar (xUSD) collapsed (Nov 2025) following a $93M loss - liquidations here aren't reliable." },
+    { address = "0xf675fbe777e992f5d5d84adf41161dc0f20104a6", reason = "Part of a lending cluster left with bad debt after Stream Finance's synthetic dollar (xUSD) collapsed (Nov 2025) following a $93M loss - liquidations here aren't reliable." },
 ]

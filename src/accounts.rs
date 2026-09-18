@@ -269,7 +269,7 @@ mod test {
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
             mode: crate::config::VaultFilterMode::Whitelist,
-            items: vec![Address::random(), Address::random(), vault],
+            items: vec![Address::random().into(), Address::random().into(), vault.into()],
         };
 
         // Fetch the account with no filter, this should work as expected.
@@ -286,7 +286,7 @@ mod test {
 
         let sad_filter = VaultFilter {
             mode: crate::config::VaultFilterMode::Whitelist,
-            items: vec![Address::random(), Address::random()],
+            items: vec![Address::random().into(), Address::random().into()],
         };
 
         // Fetch the account again but now with whitelist filter that should not allow it.
@@ -340,7 +340,7 @@ mod test {
         // The filter that will allow the account.
         let happy_filter = VaultFilter {
             mode: crate::config::VaultFilterMode::Blacklist,
-            items: vec![Address::random(), Address::random()],
+            items: vec![Address::random().into(), Address::random().into()],
         };
 
         // Fetch the account with no filter, this should work as expected.
@@ -357,7 +357,7 @@ mod test {
 
         let sad_filter = VaultFilter {
             mode: crate::config::VaultFilterMode::Blacklist,
-            items: vec![Address::random(), Address::random(), vault],
+            items: vec![Address::random().into(), Address::random().into(), vault.into()],
         };
 
         // Fetch the account again, now with a filter that blacklists the vault it borrows

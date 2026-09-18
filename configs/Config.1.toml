@@ -26,8 +26,8 @@ endpoint = "https://hermes.pyth.network/"
 [vault_filter]
 mode = "Blacklist"
 items = [
-    "0xdB6856e8478DB159c383a0c4b274E259AF83cB15",
-    "0xcbc9b61177444a793b85442d3a953b90f6170b7d", # Resolv - USDC
-    "0x3b028b4b6c567ef5f8ca1144da4fbaa0d973f228", # Tulipa Resolv - USDC
+    { address = "0xdB6856e8478DB159c383a0c4b274E259AF83cB15", reason = "Test vault with no real collateral or borrowers - not a genuine market, so there is nothing to liquidate." },
+    { address = "0xcbc9b61177444a793b85442d3a953b90f6170b7d", reason = "Takes Resolv-issued (USR-linked) collateral. A security incident at Resolv left pricing for that collateral unreliable, so liquidations here can't be trusted." },
+    { address = "0x3b028b4b6c567ef5f8ca1144da4fbaa0d973f228", reason = "Takes Resolv ecosystem (USR-linked) collateral. A security incident at Resolv left pricing for that collateral unreliable, so liquidations here can't be trusted." },
 ]
 
