@@ -161,6 +161,17 @@ pub struct Config {
     #[serde(default = "default_vault_shares_polling_interval_seconds")]
     pub vault_shares_polling_interval_seconds: u64,
 
+    // At what interval should we refresh the cached LTVs of every vault we know about, so
+    // governance changes are picked up. Defaults to an hour as these rarely change.
+    #[serde(default = "default_vault_ltv_polling_interval_seconds")]
+    pub vault_ltv_polling_interval_seconds: u64,
+
+    // At what interval should we re-resolve the type (e.g. Pyth or not) of every oracle we
+    // know about, so router config changes are picked up. Defaults to an hour as these
+    // rarely change.
+    #[serde(default = "default_oracle_type_refresh_interval_seconds")]
+    pub oracle_type_refresh_interval_seconds: u64,
+
     // If enabled we will be forking the chain and processing the liquidations on the fork.
     #[serde(default)]
     pub simulation_mode: bool,
@@ -176,6 +187,14 @@ pub struct Config {
 
 fn default_vault_shares_polling_interval_seconds() -> u64 {
     60
+}
+
+fn default_vault_ltv_polling_interval_seconds() -> u64 {
+    3600
+}
+
+fn default_oracle_type_refresh_interval_seconds() -> u64 {
+    3600
 }
 
 #[derive(Deserialize, Clone)]

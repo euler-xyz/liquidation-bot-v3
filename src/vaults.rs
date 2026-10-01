@@ -147,16 +147,8 @@ impl Vaults {
                 )
             })?;
 
-        let ltv_info = lens
-            .getRecognizedCollateralsLTVInfo(address)
-            .call()
-            .await
-            .with_context(|| {
-                format!(
-                    "Error while calling the VaultLens for vault {} using lens {}",
-                    address, self.vault_lens
-                )
-            })?;
+        let ltvs = self.fetch_ltvs(provider, address).await?;
+        self.ltvs.insert(address, Arc::new(ltvs.clone()));
 
         let shares_to_underlying_ratio = get_shares_to_underlying(provider, address).await?;
         self.store_ratio(address, shares_to_underlying_ratio);
@@ -171,23 +163,45 @@ impl Vaults {
             borrow_interest_rate: (),
             supply_interest_rate: (),
             adapter: info.oracle,
-            ltvs: ltv_info
-                .iter()
-                .map(|ltv| {
-                    (
-                        ltv.collateral,
-                        Ltv::new(
-                            ltv.collateral,
-                            ltv.borrowLTV,
-                            ltv.liquidationLTV,
-                            ltv.initialLiquidationLTV,
-                            ltv.targetTimestamp,
-                            ltv.rampDuration,
-                        ),
-                    )
-                })
-                .collect(),
+            ltvs,
         })
+    }
+
+    /// Fetches the LTVs of all collaterals recognized by an EVault, keyed by the collateral
+    /// vault address.
+    async fn fetch_ltvs(
+        &self,
+        provider: &DynProvider,
+        address: Address,
+    ) -> Result<HashMap<Address, Ltv>> {
+        let lens = VaultLens::new(self.vault_lens, provider);
+        let ltv_info = lens
+            .getRecognizedCollateralsLTVInfo(address)
+            .call()
+            .await
+            .with_context(|| {
+                format!(
+                    "Error while calling the VaultLens for vault {} using lens {}",
+                    address, self.vault_lens
+                )
+            })?;
+
+        Ok(ltv_info
+            .iter()
+            .map(|ltv| {
+                (
+                    ltv.collateral,
+                    Ltv::new(
+                        ltv.collateral,
+                        ltv.borrowLTV,
+                        ltv.liquidationLTV,
+                        ltv.initialLiquidationLTV,
+                        ltv.targetTimestamp,
+                        ltv.rampDuration,
+                    ),
+                )
+            })
+            .collect())
     }
 
     /// Fetches the details of a plain ERC4626 vault.
@@ -230,14 +244,57 @@ impl Vaults {
         self.ratios.get(&address).map(|entry| *entry)
     }
 
-    /// Returns the most recently cached LTVs of a controller (EVault), if we have them.
+    /// Returns the most recently cached LTVs of a controller (EVault), if we have them. This
+    /// is a plain in-memory lookup, the cache is kept fresh by [`Vaults::refresh_all_ltvs`]
+    /// running on its own schedule, see [`poll_vault_ltvs`].
     pub fn cached_ltvs(&self, controller: Address) -> Option<Arc<HashMap<Address, Ltv>>> {
         self.ltvs.get(&controller).map(|entry| entry.clone())
     }
 
-    /// Re-fetches the LTVs for every known EVault and updates the cache.
-    // TODO: Not implemented yet, this is a stub so the tests for issue #2 compile.
-    pub async fn refresh_all_ltvs(&self, _provider: &DynProvider) {}
+    /// Re-fetches the LTVs for every known EVault and updates both the LTV cache and the
+    /// stored vault, so accounts fetched afterwards also get a vault with the current LTVs. A
+    /// failure for one vault is logged and does not affect the others: the previously cached
+    /// LTVs for that vault are simply left in place until the next successful refresh.
+    pub async fn refresh_all_ltvs(&self, provider: &DynProvider) {
+        // Only EVaults have LTVs.
+        let evaults: Vec<Arc<EVault>> = self
+            .vaults
+            .iter()
+            .filter_map(|entry| entry.value().as_evault().cloned())
+            .collect();
+
+        stream::iter(evaults)
+            .map(|evault| async move {
+                let address = evault.address;
+                let ltvs = match self.fetch_ltvs(provider, address).await {
+                    Ok(ltvs) => ltvs,
+                    Err(err) => {
+                        warn!(
+                            vault =? address,
+                            err =? err,
+                            "Could not refresh the LTVs for vault, keeping the previously cached value"
+                        );
+                        return;
+                    }
+                };
+
+                if ltvs != evault.ltvs {
+                    info!(vault =? address, "The LTVs of vault have changed");
+                }
+
+                self.ltvs.insert(address, Arc::new(ltvs.clone()));
+                self.vaults.insert(
+                    address,
+                    Vault::EVault(Arc::new(EVault {
+                        ltvs,
+                        ..(*evault).clone()
+                    })),
+                );
+            })
+            .buffer_unordered(REFRESH_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+    }
 
     /// All vault addresses we currently know about, i.e. have been looked up via
     /// [`Vaults::get_or_fetch`] at least once.
@@ -306,6 +363,28 @@ pub async fn poll_vault_shares(
         );
 
         vaults.refresh_all_ratios(&provider).await;
+    }
+}
+
+/// Periodically refreshes the LTVs of every EVault the bot currently knows about, so that
+/// governance changes (lowered or raised LTVs, newly added collaterals) are picked up without
+/// a restart.
+pub async fn poll_vault_ltvs(
+    provider: DynProvider,
+    vaults: Vaults,
+    interval: tokio::time::Duration,
+) -> Result<()> {
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let known = vaults.known_vault_addresses();
+        if known.is_empty() {
+            continue;
+        }
+
+        info!("Refreshing the LTVs for {} known vaults", known.len());
+
+        vaults.refresh_all_ltvs(&provider).await;
     }
 }
 

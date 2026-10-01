@@ -239,12 +239,18 @@ impl Account {
             borrow.amount,
         )?;
 
+        // The LTVs are read from the live cache (kept fresh in the background by
+        // `poll_vault_ltvs`), not from the `EVault` snapshot embedded on this account, as
+        // governance can change them at any time.
+        let cached_ltvs = vaults.cached_ltvs(borrow.vault.address);
+        let ltvs = cached_ltvs.as_deref().unwrap_or(&borrow.vault.ltvs);
+
         let total_assets = self
             .collaterals
             .iter()
             .map(|a| {
                 // Take into acccount the liquidation LTV.
-                match borrow.vault.ltvs.get(&a.vault.erc4626().address) {
+                match ltvs.get(&a.vault.erc4626().address) {
                     Some(ltv) => {
                         // Convert the amount into shares. The ratio is read from the
                         // live cache (kept fresh in the background by

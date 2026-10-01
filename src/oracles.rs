@@ -9,6 +9,7 @@ use alloy::{
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_with::TimestampSeconds;
 use serde_with::serde_as;
@@ -25,6 +26,9 @@ use crate::{
 };
 
 pub const ORACLE_PRICING_UNIT: i64 = 1000000000000000000;
+
+/// How many oracles we re-resolve concurrently during a [`OraclesCache::refresh_all_types`] pass.
+const TYPE_REFRESH_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct OraclesCache {
@@ -90,9 +94,42 @@ impl OraclesCache {
         }
     }
 
-    /// Re-resolves the type of every cached oracle and updates the cache.
-    // TODO: Not implemented yet, this is a stub so the tests for issue #3 compile.
-    pub async fn refresh_all_types(&self, _provider: &DynProvider) {}
+    /// Re-resolves the type of every cached oracle and updates the cache, so router config
+    /// changes (e.g. a pair moving to a Pyth adapter or a different feed) are picked up. A
+    /// failure for one oracle is logged and does not affect the others: the previously cached
+    /// type is simply left in place until the next successful refresh.
+    pub async fn refresh_all_types(&self, provider: &DynProvider) {
+        let ids: Vec<OracleIdentifier> = self.oracles.iter().map(|o| o.key().clone()).collect();
+
+        stream::iter(ids)
+            .map(|id| async move {
+                let oracle = match id.resolve(provider, self.lens).await {
+                    Ok(oracle) => oracle,
+                    Err(err) => {
+                        warn!(
+                            oracle =? id,
+                            err =? err,
+                            "Could not refresh the oracle type, keeping the previously cached value"
+                        );
+                        return;
+                    }
+                };
+
+                let previous_pyth_ids = self.oracles.get(&id).map(|o| o.pyth_ids());
+                if previous_pyth_ids.is_some_and(|prev| prev != oracle.pyth_ids()) {
+                    info!(
+                        oracle =? id,
+                        new =? oracle,
+                        "The Pyth feeds of oracle have changed"
+                    );
+                }
+
+                self.oracles.insert(id, oracle);
+            })
+            .buffer_unordered(TYPE_REFRESH_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+    }
 
     /// Calculates the quote based on the most recent price.
     pub fn get_quote(&self, oracle: &OracleIdentifier, amount: U256) -> Result<U256> {
@@ -296,6 +333,22 @@ pub struct OracleOutput {
     // Last price change that we have seen.
     #[serde_as(as = "TimestampSeconds<i64>")]
     last_changed_at: DateTime<Utc>,
+}
+
+/// Periodically re-resolves the type of every oracle the bot has resolved so far, see
+/// [`OraclesCache::refresh_all_types`].
+pub async fn poll_oracle_types(
+    provider: DynProvider,
+    oracles: OraclesCache,
+    interval: tokio::time::Duration,
+) -> Result<()> {
+    loop {
+        tokio::time::sleep(interval).await;
+
+        info!("Refreshing the oracle types for {} oracles", oracles.oracles.len());
+
+        oracles.refresh_all_types(&provider).await;
+    }
 }
 
 pub async fn poll_oracles(
