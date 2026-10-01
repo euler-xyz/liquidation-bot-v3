@@ -23,7 +23,7 @@ use crate::{
     dispatcher::DispatchConfig,
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
-    oracles::{OracleChange, OraclesCache, poll_oracles},
+    oracles::{OracleChange, OraclesCache, poll_oracle_types, poll_oracles},
     prices::EulerPricingApi,
     pyth::fetch_pyth_data,
     subgraph::{
@@ -35,7 +35,7 @@ use crate::{
         Account, LiquidationReasoning, LiquidationReasoningError, VaultBorrowPosition,
         VaultCollateralPosition,
     },
-    vaults::{Vaults, poll_vault_shares},
+    vaults::{Vaults, poll_vault_ltvs, poll_vault_shares},
 };
 use anyhow::{Result, anyhow};
 
@@ -183,6 +183,44 @@ async fn main() {
             .inspect_err(|e| {
                 error!(
                     "Polling of vault shares_to_underlying ratios had a critical error, it is no longer operating. err: {:?}",
+                    e
+                )
+            });
+        });
+    }
+
+    let vault_ltvs_provider = provider.clone();
+    {
+        let vaults = vaults.clone();
+        tokio::spawn(async move {
+            let _ = poll_vault_ltvs(
+                vault_ltvs_provider.erased(),
+                vaults,
+                tokio::time::Duration::from_secs(config.vault_ltv_polling_interval_seconds),
+            )
+            .await
+            .inspect_err(|e| {
+                error!(
+                    "Polling of vault LTVs had a critical error, it is no longer operating. err: {:?}",
+                    e
+                )
+            });
+        });
+    }
+
+    let oracle_types_provider = provider.clone();
+    {
+        let oracles = oracles.clone();
+        tokio::spawn(async move {
+            let _ = poll_oracle_types(
+                oracle_types_provider.erased(),
+                oracles,
+                tokio::time::Duration::from_secs(config.oracle_type_refresh_interval_seconds),
+            )
+            .await
+            .inspect_err(|e| {
+                error!(
+                    "Polling of oracle types had a critical error, it is no longer operating. err: {:?}",
                     e
                 )
             });
@@ -1276,7 +1314,11 @@ mod test {
         // assert!(liquidation.unwrap().is_some());
     }
 
+    /// Uses live swap API quotes against a fork pinned to an old block. The API can route
+    /// through contracts deployed after that block, which makes the swap revert on the fork,
+    /// so this only runs on demand: `cargo test liquidation_with_swap_data -- --ignored`.
     #[tokio::test]
+    #[ignore = "live swap API routes can reference contracts that don't exist at the pinned fork block; run manually with --ignored"]
     async fn liquidation_with_swap_data() {
         // This account is healthy at this block.
         let block = 24935457;

@@ -67,30 +67,71 @@ sol! {
     }
 }
 
+/// The maximum number of blocks we query logs for in a single `eth_getLogs` call. Providers
+/// reject queries spanning too many blocks, so after a gap (e.g. an RPC outage) we catch up in
+/// chunks of at most this size.
+const MAX_LOG_RANGE: u64 = 1_000;
+
+/// How many already processed blocks we re-query on every pass, so events from blocks that got
+/// reorged out (and replaced) are not lost. Re-processing a block only re-sends the accounts in
+/// it, which is harmless.
+const REORG_MARGIN: u64 = 10;
+
 /// Watches the chain for account update events from the most recent block.
 pub async fn watch_chain_for_accounts_from_latest(
     provider: DynProvider,
     evc: Address,
     account_update_channel: Sender<Address>,
 ) {
-    let latest = match provider.get_block_number().await {
-        Ok(latest) => latest,
-        Err(err) => {
-            error!("Error while fetching the current block number: {err}");
-            0
+    // NOTE: We have to keep retrying here, falling back to some default block (e.g. 0) would
+    // make us query a range that is way too large.
+    let latest = loop {
+        match provider.get_block_number().await {
+            Ok(latest) => break latest,
+            Err(err) => {
+                error!("Error while fetching the current block number: {err}");
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
         }
     };
 
     watch_chain_for_accounts(provider, evc, account_update_channel, latest).await
 }
 
-/// Watches the chain for account update events
+/// Determines the next (inclusive) block range to query logs for, given the last block we fully
+/// processed and the latest block. Returns `None` if there are no new blocks.
+///
+/// The range always spans at most `chunk` blocks and always includes at least one new block, so
+/// every successful query makes progress. Within that, it re-queries up to [`REORG_MARGIN`]
+/// already processed blocks. When the range is capped by `chunk` (i.e. while catching up after a
+/// gap) the margin is dropped, as those blocks are not near the head anyway.
+fn next_range(processed_up_to: Option<u64>, latest: u64, chunk: u64) -> Option<(u64, u64)> {
+    let first_unprocessed = match processed_up_to {
+        Some(processed) if processed >= latest => return None,
+        Some(processed) => processed + 1,
+        None => 0,
+    };
+
+    let chunk = chunk.max(1);
+    let to = latest.min(first_unprocessed.saturating_add(chunk - 1));
+    let from = first_unprocessed
+        .saturating_sub(REORG_MARGIN)
+        .max((to + 1).saturating_sub(chunk));
+
+    Some((from, to))
+}
+
+/// Watches the chain for account update events, starting at (and including) `from_block`.
 pub async fn watch_chain_for_accounts(
     provider: DynProvider,
     evc: Address,
     account_update_channel: Sender<Address>,
-    mut from_block: u64,
+    from_block: u64,
 ) {
+    // The last block for which we have processed all logs.
+    let mut processed_up_to = from_block.checked_sub(1);
+    let mut chunk = MAX_LOG_RANGE;
+
     loop {
         let latest = match provider.get_block_number().await {
             Ok(latest) => latest,
@@ -101,70 +142,79 @@ pub async fn watch_chain_for_accounts(
             }
         };
 
-        if latest >= from_block {
-            let filter = Filter::new()
-                .address(evc)
-                .from_block(from_block)
-                .to_block(latest);
+        // Process chunks back-to-back until we have caught up with the latest block.
+        while let Some((from, to)) = next_range(processed_up_to, latest, chunk) {
+            let filter = Filter::new().address(evc).from_block(from).to_block(to);
 
             let logs: Vec<Log> = match provider.get_logs(&filter).await {
                 Ok(logs) => logs,
                 Err(err) => {
+                    // The provider may have a lower block range limit than we use, so we retry
+                    // the same position with a smaller chunk.
+                    chunk = (chunk / 2).max(1);
                     error!(
-                        "Error while fetching logs from block range {}-{}: {err}",
-                        from_block, latest
+                        "Error while fetching logs from block range {}-{}, retrying with chunks of {} blocks: {err}",
+                        from, to, chunk
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
             };
 
-            let mut users = HashSet::new();
-            for log in &logs {
-                // Decode any of these events, then extract the account from it and add it to the
-                // set.
-                match log.topic0() {
-                    Some(&Events::AccountStatusCheck::SIGNATURE_HASH) => {
-                        match Events::AccountStatusCheck::decode_log(&log.inner) {
-                            Ok(decoded) => users.insert(decoded.account),
-                            Err(_) => continue,
-                        };
-                    }
-                    Some(&Events::ControllerStatus::SIGNATURE_HASH) => {
-                        match Events::ControllerStatus::decode_log(&log.inner) {
-                            Ok(decoded) => users.insert(decoded.account),
-                            Err(_) => continue,
-                        };
-                    }
-                    Some(&Events::CollateralStatus::SIGNATURE_HASH) => {
-                        match Events::CollateralStatus::decode_log(&log.inner) {
-                            Ok(decoded) => users.insert(decoded.account),
-                            Err(_) => continue,
-                        };
-                    }
-                    _ => {}
-                };
-            }
+            emit_accounts(&logs, &account_update_channel);
 
-            // Send the updates over the channel. A broadcast send never blocks: if the buffer
-            // is full the oldest event is overwritten (and reconciled by the next full resync),
-            // so a stalled consumer can never stall this watcher. It only errors when there is
-            // no receiver at all.
-            for user in users.iter() {
-                if let Err(err) = account_update_channel.send(*user) {
-                    error!(
-                        "Issue when attempting to send update over accounts channel, the receiver was likely dropped, err: {:?}",
-                        err
-                    );
-                }
-            }
-
-            // Advance past the range we just queried
-            from_block = latest + 1;
+            // Advance past the range we just queried.
+            processed_up_to = Some(to);
         }
+
+        // We caught up, so the next pass can use the full chunk size again.
+        chunk = MAX_LOG_RANGE;
 
         // TODO: Make duration configurable, perhaps also an option to watch for new block events.
         time::sleep(tokio::time::Duration::from_secs(15)).await;
+    }
+}
+
+/// Decodes the accounts from the EVC logs and sends each of them over the channel once.
+fn emit_accounts(logs: &[Log], account_update_channel: &Sender<Address>) {
+    let mut users = HashSet::new();
+    for log in logs {
+        // Decode any of these events, then extract the account from it and add it to the
+        // set.
+        match log.topic0() {
+            Some(&Events::AccountStatusCheck::SIGNATURE_HASH) => {
+                match Events::AccountStatusCheck::decode_log(&log.inner) {
+                    Ok(decoded) => users.insert(decoded.account),
+                    Err(_) => continue,
+                };
+            }
+            Some(&Events::ControllerStatus::SIGNATURE_HASH) => {
+                match Events::ControllerStatus::decode_log(&log.inner) {
+                    Ok(decoded) => users.insert(decoded.account),
+                    Err(_) => continue,
+                };
+            }
+            Some(&Events::CollateralStatus::SIGNATURE_HASH) => {
+                match Events::CollateralStatus::decode_log(&log.inner) {
+                    Ok(decoded) => users.insert(decoded.account),
+                    Err(_) => continue,
+                };
+            }
+            _ => {}
+        };
+    }
+
+    // Send the updates over the channel. A broadcast send never blocks: if the buffer
+    // is full the oldest event is overwritten (and reconciled by the next full resync),
+    // so a stalled consumer can never stall this watcher. It only errors when there is
+    // no receiver at all.
+    for user in users.iter() {
+        if let Err(err) = account_update_channel.send(*user) {
+            error!(
+                "Issue when attempting to send update over accounts channel, the receiver was likely dropped, err: {:?}",
+                err
+            );
+        }
     }
 }
 
@@ -239,12 +289,18 @@ impl Account {
             borrow.amount,
         )?;
 
+        // The LTVs are read from the live cache (kept fresh in the background by
+        // `poll_vault_ltvs`), not from the `EVault` snapshot embedded on this account, as
+        // governance can change them at any time.
+        let cached_ltvs = vaults.cached_ltvs(borrow.vault.address);
+        let ltvs = cached_ltvs.as_deref().unwrap_or(&borrow.vault.ltvs);
+
         let total_assets = self
             .collaterals
             .iter()
             .map(|a| {
                 // Take into acccount the liquidation LTV.
-                match borrow.vault.ltvs.get(&a.vault.erc4626().address) {
+                match ltvs.get(&a.vault.erc4626().address) {
                     Some(ltv) => {
                         // Convert the amount into shares. The ratio is read from the
                         // live cache (kept fresh in the background by
@@ -298,6 +354,52 @@ impl Account {
 /// decodes. Each test forks mainnet at a block where a specific event was
 /// emitted by the EVC, runs the watcher over exactly that block, and asserts
 /// that the account carried by the event arrives on the update channel.
+#[cfg(test)]
+mod next_range_test {
+    use super::{MAX_LOG_RANGE, REORG_MARGIN, next_range};
+
+    #[test]
+    fn nothing_new_returns_none() {
+        assert_eq!(next_range(Some(100), 100, MAX_LOG_RANGE), None);
+        // The provider may briefly report an older head (e.g. a lagging node).
+        assert_eq!(next_range(Some(100), 99, MAX_LOG_RANGE), None);
+    }
+
+    #[test]
+    fn a_large_gap_is_capped_at_the_chunk_size() {
+        let (from, to) = next_range(Some(10_000), 1_000_000, MAX_LOG_RANGE).unwrap();
+        assert_eq!(from, 10_001);
+        assert_eq!(to - from + 1, MAX_LOG_RANGE);
+    }
+
+    #[test]
+    fn always_makes_progress_even_with_a_chunk_smaller_than_the_reorg_margin() {
+        // After repeated failures the chunk can shrink below the reorg margin. The range must
+        // still end past the last processed block, or the watcher would never advance.
+        for chunk in 1..=REORG_MARGIN + 1 {
+            let (from, to) = next_range(Some(10_000), 1_000_000, chunk).unwrap();
+            assert!(to > 10_000, "chunk {chunk} made no progress: {from}-{to}");
+            assert!(to - from + 1 <= chunk, "chunk {chunk} exceeded: {from}-{to}");
+        }
+    }
+
+    #[test]
+    fn a_new_block_re_queries_the_reorg_margin() {
+        assert_eq!(
+            next_range(Some(1_000), 1_001, MAX_LOG_RANGE),
+            Some((1_001 - REORG_MARGIN, 1_001))
+        );
+    }
+
+    #[test]
+    fn does_not_underflow_near_genesis() {
+        assert_eq!(next_range(None, 5, MAX_LOG_RANGE), Some((0, 5)));
+        assert_eq!(next_range(Some(2), 3, MAX_LOG_RANGE), Some((0, 3)));
+        // A zero chunk is treated as a single block.
+        assert_eq!(next_range(None, 5, 0), Some((0, 0)));
+    }
+}
+
 #[cfg(test)]
 mod watch_test {
     use super::*;
@@ -593,6 +695,48 @@ mod test {
         // 160. If `calculate_health` were still reading the stale embedded snapshot
         // (1:1) this would be 80 instead.
         assert_eq!(solvency.collateral_value, U256::from(160));
+    }
+
+    #[test]
+    fn calculate_health_uses_the_live_cached_ltvs_not_the_fetch_time_snapshot() {
+        // The borrow vault snapshot lists the collateral at an 80% liquidation LTV...
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(100), unit(), true);
+
+        // ...then simulate a refresh picking up a governance change that lowered it to 50%,
+        // without touching the `Account`/`Vault` snapshot at all.
+        let controller = account.borrows.first().unwrap().vault.address;
+        let collateral_vault_addr = account.collaterals.first().unwrap().vault.erc4626().address;
+        vaults.insert_ltvs_for_test(
+            controller,
+            HashMap::from([(collateral_vault_addr, fixed_ltv(5000))]),
+        );
+
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
+
+        // 100 collateral at the *updated* 50% LTV => 50. With the stale snapshot (80%) this
+        // would be 80.
+        assert_eq!(solvency.collateral_value, U256::from(50));
+    }
+
+    #[test]
+    fn calculate_health_values_a_collateral_added_after_the_snapshot() {
+        // The borrow vault snapshot does not recognize the collateral at all...
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(200), unit(), false);
+
+        // ...but the controller has since added it at an 80% liquidation LTV.
+        let controller = account.borrows.first().unwrap().vault.address;
+        let collateral_vault_addr = account.collaterals.first().unwrap().vault.erc4626().address;
+        vaults.insert_ltvs_for_test(
+            controller,
+            HashMap::from([(collateral_vault_addr, fixed_ltv(8000))]),
+        );
+
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
+
+        // 200 collateral at 80% => 160, which covers the 100 borrow. With the stale snapshot
+        // the collateral would be worth 0 and the account would look unhealthy.
+        assert_eq!(solvency.collateral_value, U256::from(160));
+        assert!(solvency.is_healthy());
     }
 
     #[test]
