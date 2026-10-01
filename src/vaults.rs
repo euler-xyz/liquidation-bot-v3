@@ -10,7 +10,7 @@ use alloy::{
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use futures::{StreamExt, stream};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, info, warn};
 
 /// How many vaults we refresh concurrently during a [`Vaults::refresh_all_ratios`] pass.
@@ -27,6 +27,10 @@ pub struct Vaults {
     /// [`poll_vault_shares`]). This is the cache [`crate::account::Account::calculate_health`]
     /// reads from: a plain in-memory lookup, never a chain call.
     ratios: Arc<DashMap<Address, U256>>,
+
+    /// The most recently observed LTVs for each EVault (controller), keyed by the
+    /// controller address and then the collateral vault address.
+    ltvs: Arc<DashMap<Address, Arc<HashMap<Address, Ltv>>>>,
 }
 
 sol! {
@@ -96,6 +100,7 @@ impl Vaults {
             utils_lens,
             vaults: Arc::new(DashMap::new()),
             ratios: Arc::new(DashMap::new()),
+            ltvs: Arc::new(DashMap::new()),
         }
     }
 
@@ -225,6 +230,15 @@ impl Vaults {
         self.ratios.get(&address).map(|entry| *entry)
     }
 
+    /// Returns the most recently cached LTVs of a controller (EVault), if we have them.
+    pub fn cached_ltvs(&self, controller: Address) -> Option<Arc<HashMap<Address, Ltv>>> {
+        self.ltvs.get(&controller).map(|entry| entry.clone())
+    }
+
+    /// Re-fetches the LTVs for every known EVault and updates the cache.
+    // TODO: Not implemented yet, this is a stub so the tests for issue #2 compile.
+    pub async fn refresh_all_ltvs(&self, _provider: &DynProvider) {}
+
     /// All vault addresses we currently know about, i.e. have been looked up via
     /// [`Vaults::get_or_fetch`] at least once.
     pub fn known_vault_addresses(&self) -> Vec<Address> {
@@ -261,6 +275,12 @@ impl Vaults {
     pub(crate) fn insert_ratio_for_test(&self, address: Address, ratio: U256) {
         self.store_ratio(address, ratio);
     }
+
+    /// Test-only helper to seed the LTV cache without hitting the chain.
+    #[cfg(test)]
+    pub(crate) fn insert_ltvs_for_test(&self, controller: Address, ltvs: HashMap<Address, Ltv>) {
+        self.ltvs.insert(controller, Arc::new(ltvs));
+    }
 }
 
 /// Periodically refreshes the `shares_to_underlying` ratio for every vault the bot
@@ -291,9 +311,107 @@ pub async fn poll_vault_shares(
 
 #[cfg(test)]
 mod test {
-    use alloy::primitives::{Address, U256};
+    use alloy::{
+        node_bindings::Anvil,
+        primitives::{Address, U256, address},
+        providers::{Provider, ProviderBuilder, ext::AnvilApi},
+        rpc::types::TransactionRequest,
+        sol,
+        sol_types::SolCall,
+    };
 
     use super::Vaults;
+    use crate::{config::load_configuration_file_for_test, test_utils::ensure_contracts_on_fork};
+
+    sol! {
+        function setLTV(address collateral, uint16 borrowLTV, uint16 liquidationLTV, uint32 rampDuration);
+    }
+
+    #[tokio::test]
+    async fn refresh_all_ltvs_picks_up_an_on_chain_ltv_change() {
+        let block = 25644480;
+        // A mainnet EVault, one of its recognized collaterals, and its governor at `block`.
+        let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
+        let collateral = address!("0xAB2726DAf820Aa9270D14Db9B18c8d187cbF2f30");
+        let governor = address!("0x9453ee262d7C95955e690AE7aBBD82a08B135685");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[config.vault_lens_address, config.utils_lens_address],
+        )
+        .await
+        .unwrap();
+
+        let vaults = Vaults::new(config.vault_lens_address, config.utils_lens_address);
+
+        // First load, this is what gets cached.
+        let before = vaults.get_or_fetch(&provider, vault).await.unwrap();
+        let before_ltv = before.as_evault().unwrap().ltvs[&collateral].current_liquidation_ltv();
+
+        // The governor lowers the liquidation LTV of the collateral, without a ramp.
+        let new_liquidation_ltv: u16 = 1000;
+        assert_ne!(before_ltv, U256::from(new_liquidation_ltv));
+
+        provider.anvil_impersonate_account(governor).await.unwrap();
+        provider
+            .anvil_set_balance(governor, U256::from(10).pow(U256::from(18)))
+            .await
+            .unwrap();
+        let receipt = provider
+            .send_transaction(
+                TransactionRequest::default()
+                    .from(governor)
+                    .to(vault)
+                    .input(
+                        setLTVCall {
+                            collateral,
+                            borrowLTV: new_liquidation_ltv / 2,
+                            liquidationLTV: new_liquidation_ltv,
+                            rampDuration: 0,
+                        }
+                        .abi_encode()
+                        .into(),
+                    ),
+            )
+            .await
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+        assert!(receipt.status(), "setLTV reverted");
+
+        vaults.refresh_all_ltvs(&provider).await;
+
+        // The vault handed out to newly fetched accounts reflects the change...
+        let after = vaults.get_or_fetch(&provider, vault).await.unwrap();
+        assert_eq!(
+            after.as_evault().unwrap().ltvs[&collateral].current_liquidation_ltv(),
+            U256::from(new_liquidation_ltv)
+        );
+
+        // ...and so does the live LTV cache, which `calculate_health` reads.
+        let cached = vaults
+            .cached_ltvs(vault)
+            .expect("expected cached LTVs for the vault");
+        assert_eq!(
+            cached[&collateral].current_liquidation_ltv(),
+            U256::from(new_liquidation_ltv)
+        );
+    }
 
     #[test]
     fn cached_ratio_reflects_the_last_inserted_value() {

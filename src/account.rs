@@ -596,6 +596,48 @@ mod test {
     }
 
     #[test]
+    fn calculate_health_uses_the_live_cached_ltvs_not_the_fetch_time_snapshot() {
+        // The borrow vault snapshot lists the collateral at an 80% liquidation LTV...
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(100), unit(), true);
+
+        // ...then simulate a refresh picking up a governance change that lowered it to 50%,
+        // without touching the `Account`/`Vault` snapshot at all.
+        let controller = account.borrows.first().unwrap().vault.address;
+        let collateral_vault_addr = account.collaterals.first().unwrap().vault.erc4626().address;
+        vaults.insert_ltvs_for_test(
+            controller,
+            HashMap::from([(collateral_vault_addr, fixed_ltv(5000))]),
+        );
+
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
+
+        // 100 collateral at the *updated* 50% LTV => 50. With the stale snapshot (80%) this
+        // would be 80.
+        assert_eq!(solvency.collateral_value, U256::from(50));
+    }
+
+    #[test]
+    fn calculate_health_values_a_collateral_added_after_the_snapshot() {
+        // The borrow vault snapshot does not recognize the collateral at all...
+        let (account, cache, vaults) = fixture(U256::from(100), U256::from(200), unit(), false);
+
+        // ...but the controller has since added it at an 80% liquidation LTV.
+        let controller = account.borrows.first().unwrap().vault.address;
+        let collateral_vault_addr = account.collaterals.first().unwrap().vault.erc4626().address;
+        vaults.insert_ltvs_for_test(
+            controller,
+            HashMap::from([(collateral_vault_addr, fixed_ltv(8000))]),
+        );
+
+        let solvency = account.calculate_health(&cache, &vaults).unwrap();
+
+        // 200 collateral at 80% => 160, which covers the 100 borrow. With the stale snapshot
+        // the collateral would be worth 0 and the account would look unhealthy.
+        assert_eq!(solvency.collateral_value, U256::from(160));
+        assert!(solvency.is_healthy());
+    }
+
+    #[test]
     fn collateral_not_supported_by_controller_is_worthless() {
         // The controller does not list the collateral vault, so per the health
         // logic that collateral contributes zero value.

@@ -90,6 +90,10 @@ impl OraclesCache {
         }
     }
 
+    /// Re-resolves the type of every cached oracle and updates the cache.
+    // TODO: Not implemented yet, this is a stub so the tests for issue #3 compile.
+    pub async fn refresh_all_types(&self, _provider: &DynProvider) {}
+
     /// Calculates the quote based on the most recent price.
     pub fn get_quote(&self, oracle: &OracleIdentifier, amount: U256) -> Result<U256> {
         let price = match self.prices.get(oracle) {
@@ -605,6 +609,91 @@ mod test {
         } else {
             panic!("Result is not a Pyth oracle");
         }
+    }
+
+    #[tokio::test]
+    async fn refresh_all_types_picks_up_a_router_config_change() {
+        use alloy::{
+            node_bindings::Anvil, providers::ext::AnvilApi, rpc::types::TransactionRequest, sol,
+            sol_types::SolCall,
+        };
+
+        sol! {
+            function govSetConfig(address base, address quote, address oracle);
+        }
+
+        let block = 25644480;
+        // The EulerRouter of a mainnet EVault, its governor at `block`, and a pair it prices
+        // through a generic (non-Pyth) adapter.
+        let router = address!("0xC900F9077D4DfB89B68d49fCA60206F90C707f9E");
+        let governor = address!("0x9453ee262d7C95955e690AE7aBBD82a08B135685");
+        let usdc = address!("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let usd = address!("0x0000000000000000000000000000000000000348");
+        // An existing PythOracle adapter (the one used in `identify_pyth_oracle`).
+        let pyth_adapter = address!("0x922D0c82d70c3c9F8928742E8f75004DEa228FE6");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let network = Anvil::new()
+            .fork(mainnet_rpc.clone())
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        crate::test_utils::ensure_contracts_on_fork(
+            &provider,
+            &mainnet_rpc.parse().unwrap(),
+            &[MAINNET_ORACLE_LENS],
+        )
+        .await
+        .unwrap();
+
+        let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, None);
+        let id = OracleIdentifier {
+            base_asset: usdc,
+            quote_asset: usd,
+            adapter: router,
+        };
+
+        // First resolve, this is what gets cached.
+        let before = oracles.fetch_type(&provider, id.clone()).await.unwrap();
+        assert!(before.pyth_ids().is_empty(), "expected a non-Pyth oracle before the change");
+
+        // The governor moves the pair to a Pyth adapter.
+        provider.anvil_impersonate_account(governor).await.unwrap();
+        provider
+            .anvil_set_balance(governor, U256::from(10).pow(U256::from(18)))
+            .await
+            .unwrap();
+        let receipt = provider
+            .send_transaction(
+                TransactionRequest::default().from(governor).to(router).input(
+                    govSetConfigCall {
+                        base: usdc,
+                        quote: usd,
+                        oracle: pyth_adapter,
+                    }
+                    .abi_encode()
+                    .into(),
+                ),
+            )
+            .await
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+        assert!(receipt.status(), "govSetConfig reverted");
+
+        oracles.refresh_all_types(&provider).await;
+
+        // The cached type now reflects the Pyth adapter, so its feed gets updated before use.
+        let after = oracles.fetch_type(&provider, id).await.unwrap();
+        assert!(
+            !after.pyth_ids().is_empty(),
+            "expected the refreshed oracle type to be Pyth, got {after:?}"
+        );
     }
 
     #[tokio::test]
