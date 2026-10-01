@@ -69,7 +69,7 @@ async fn fetch_pyth(
         request = request.bearer_auth(api_key);
     }
 
-    let body = request.send().await?.text().await?;
+    let body = request.send().await?.error_for_status()?.text().await?;
     Ok(serde_json::from_str(&body)?)
 }
 

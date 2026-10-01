@@ -413,6 +413,7 @@ pub async fn get_shares_to_underlying(provider: &DynProvider, vault: Address) ->
 #[cfg(test)]
 mod test {
     use alloy::{
+        node_bindings::Anvil,
         primitives::address,
         providers::{Provider, ProviderBuilder},
     };
@@ -425,6 +426,7 @@ mod test {
         prices::EulerPricingApi,
         pyth::fetch_pyth_data,
         swap::EulerSwapApi,
+        test_utils::ensure_contracts_on_fork,
         vaults::Vaults,
     };
 
@@ -581,12 +583,38 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_check_if_liquidateble() {
+    async fn test_check_if_liquidatable() {
+        // This account had an open borrow (and was healthy) at this block.
+        let block = 24935457;
         let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let chain_id = 1;
 
         let config = load_configuration_file_for_test(&rpc_url, chain_id).unwrap();
-        let provider = ProviderBuilder::new().connect_http(config.rpc_url).erased();
+
+        // Fork the network so the result does not depend on the account's live position.
+        let network = Anvil::new()
+            .fork(rpc_url)
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        // The lenses may not have been deployed yet at the forked block.
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[
+                config.vault_lens_address,
+                config.utils_lens_address,
+                config.account_lens_address,
+                config.oracle_lens_address,
+            ],
+        )
+        .await
+        .unwrap();
 
         // Our singleton vault store.
         let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
@@ -610,7 +638,7 @@ mod test {
             .ensure_prices_for(&provider, account.dependent_on())
             .await;
 
-        dbg!(account.calculate_health(&oracles, vaults).unwrap().is_unhealthy());
+        assert!(!account.calculate_health(&oracles, vaults).unwrap().is_unhealthy());
     }
 }
 

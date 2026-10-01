@@ -622,7 +622,8 @@ mod test {
         let pyth = PythConfig {
             address: MAINNET_PYTH,
             endpoint: DEFAULT_PYTH_ENDPOINT.to_string(),
-            api_key: None,
+            // Hermes rejects unauthenticated requests.
+            api_key: std::env::var("PYTH_API_KEY").ok(),
         };
 
         let oracles = OraclesCache::new(MAINNET_ORACLE_LENS, Some(pyth));

@@ -1276,7 +1276,11 @@ mod test {
         // assert!(liquidation.unwrap().is_some());
     }
 
+    /// Uses live swap API quotes against a fork pinned to an old block. The API can route
+    /// through contracts deployed after that block, which makes the swap revert on the fork,
+    /// so this only runs on demand: `cargo test liquidation_with_swap_data -- --ignored`.
     #[tokio::test]
+    #[ignore = "live swap API routes can reference contracts that don't exist at the pinned fork block; run manually with --ignored"]
     async fn liquidation_with_swap_data() {
         // This account is healthy at this block.
         let block = 24935457;
