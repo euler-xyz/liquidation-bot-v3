@@ -322,7 +322,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             let profit_in_native = match self
                 .pricing
                 .quote(
-                    liq.collateral().vault.erc4626().asset,
+                    liq.borrow().vault.asset,
                     profit,
                     self.wrapped_native_asset,
                 )
@@ -430,11 +430,13 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                 Ok(_) => {
                     // This is valid swap data, since we ordered by profitability we can just return
                     // as this will be the most profitable that we will run into.
+                    // The swap outputs the borrow asset, so the profit is denominated in the
+                    // borrow asset and must be priced as such.
                     let profit = quote.amount_out - liq.repay_amount();
                     let profit_in_native = match self
                         .pricing
                         .quote(
-                            liq.collateral().vault.erc4626().asset,
+                            liq.borrow().vault.asset,
                             profit,
                             self.wrapped_native_asset,
                         )
