@@ -589,7 +589,16 @@ mod test {
     }
 
     fn same_asset_liquidation(asset: Address, repay: U256, seized: U256) -> PreparedLiquidation {
-        let make_vault = || {
+        liquidation(asset, asset, repay, seized)
+    }
+
+    fn liquidation(
+        borrow_asset: Address,
+        collateral_asset: Address,
+        repay: U256,
+        seized: U256,
+    ) -> PreparedLiquidation {
+        let make_vault = |asset: Address| {
             Arc::new(EVault {
                 erc4626: Erc4626Vault {
                     address: Address::random(),
@@ -606,11 +615,11 @@ mod test {
 
         let borrow = VaultBorrowPosition {
             amount: repay,
-            vault: make_vault(),
+            vault: make_vault(borrow_asset),
         };
         let collateral = VaultCollateralPosition {
             amount: seized,
-            vault: Vault::EVault(make_vault()),
+            vault: Vault::EVault(make_vault(collateral_asset)),
         };
 
         PreparedLiquidation::new_for_test(
@@ -649,6 +658,141 @@ mod test {
 
         let result = api(U256::from(2)).find_swap(liq).await.unwrap();
         assert!(result.is_none());
+    }
+
+    // ── find_swap: swap branch (collateral and borrow assets differ) ────────
+
+    /// A pricing stub that prices each asset separately, as wei per smallest unit of that asset.
+    /// It mirrors the real `EulerPricingApi` short-circuit for input == output, and errors on
+    /// assets it does not know about, so pricing the wrong asset can not pass silently.
+    struct PerAssetPricing {
+        prices: HashMap<Address, U256>,
+    }
+
+    impl PriceAsset for PerAssetPricing {
+        async fn quote(
+            &self,
+            input_asset: Address,
+            input_amount: U256,
+            output_asset: Address,
+        ) -> Result<U256, PricingError> {
+            if input_asset == output_asset {
+                return Ok(input_amount);
+            }
+
+            match self.prices.get(&input_asset) {
+                Some(price) => Ok(input_amount * price),
+                None => Err(PricingError::Other(anyhow::anyhow!(
+                    "no price for {input_asset}"
+                ))),
+            }
+        }
+    }
+
+    /// Serves a single swap quote with the given `amountOut` on `GET /swaps` and returns the
+    /// base URL to point the swap API at.
+    async fn mock_swap_api(amount_out: U256) -> reqwest::Url {
+        let body = serde_json::json!({
+            "success": true,
+            "data": [
+                { "amountOut": amount_out.to_string(), "swap": { "multicallItems": [ { "data": "0x" } ] } }
+            ]
+        });
+
+        let app = axum::Router::new().route(
+            "/swaps",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { axum::Json(body) }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        format!("http://{addr}/").parse().unwrap()
+    }
+
+    /// Runs `find_swap` through the swap branch, with a mocked swap API returning `amount_out`
+    /// and a mocked RPC under which the liquidation simulation succeeds.
+    async fn find_swap_via_swap_path(
+        liq: PreparedLiquidation,
+        amount_out: U256,
+        wrapped_native: Address,
+        pricing: PerAssetPricing,
+    ) -> PreparedLiquidation {
+        let asserter = alloy::transports::mock::Asserter::new();
+        let provider = ProviderBuilder::new()
+            .connect_mocked_client(asserter.clone())
+            .erased();
+        // Response to the `eth_call` that simulates the liquidation.
+        asserter.push_success(&alloy::primitives::Bytes::new());
+
+        let api = EulerSwapApi::new(
+            mock_swap_api(amount_out).await,
+            provider,
+            1,
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            wrapped_native,
+            "0.1",
+            pricing,
+        );
+
+        api.find_swap(liq)
+            .await
+            .unwrap()
+            .expect("expected a prepared liquidation")
+    }
+
+    #[tokio::test]
+    async fn find_swap_swap_path_prices_profit_in_borrow_asset() {
+        // WETH (18 decimals, the wrapped native asset) collateral against USDC (6 decimals) debt.
+        let weth = Address::random();
+        let usdc = Address::random();
+        // 1 USDC = 0.0005 ETH, so one USDC unit (1e-6 USDC) is worth 5e8 wei.
+        let pricing = PerAssetPricing {
+            prices: HashMap::from([(usdc, U256::from(500_000_000u64))]),
+        };
+
+        // Repay 1000 USDC; swapping the seized WETH yields 1100 USDC => 100 USDC profit.
+        let repay = U256::from(1_000_000_000u64);
+        let amount_out = U256::from(1_100_000_000u64);
+        let liq = liquidation(usdc, weth, repay, U256::from(10).pow(U256::from(18)));
+
+        let prepared = find_swap_via_swap_path(liq, amount_out, weth, pricing).await;
+
+        // The profit is denominated in the borrow asset (USDC).
+        assert_eq!(prepared.profit_in_asset(), U256::from(100_000_000u64));
+        // 100 USDC * 0.0005 ETH = 0.05 ETH.
+        assert_eq!(
+            prepared.profit(),
+            ExpectedProfit::Native(U256::from(50_000_000_000_000_000u64))
+        );
+    }
+
+    #[tokio::test]
+    async fn find_swap_swap_path_reverse_pairing() {
+        // USDC (6 decimals) collateral against WETH (18 decimals, the wrapped native) debt.
+        let weth = Address::random();
+        let usdc = Address::random();
+        let pricing = PerAssetPricing {
+            prices: HashMap::from([(usdc, U256::from(500_000_000u64))]),
+        };
+
+        // Repay 1 WETH; swapping the seized USDC yields 1.01 WETH => 0.01 WETH profit.
+        let repay = U256::from(1_000_000_000_000_000_000u64);
+        let amount_out = U256::from(1_010_000_000_000_000_000u64);
+        let liq = liquidation(weth, usdc, repay, U256::from(2_100_000_000u64));
+
+        let prepared = find_swap_via_swap_path(liq, amount_out, weth, pricing).await;
+
+        // The profit is already in the native asset, so it must not be scaled at all.
+        let expected = U256::from(10_000_000_000_000_000u64);
+        assert_eq!(prepared.profit_in_asset(), expected);
+        assert_eq!(prepared.profit(), ExpectedProfit::Native(expected));
     }
 
     // ── response deserialization ────────────────────────────────────────────
