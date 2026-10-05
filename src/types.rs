@@ -310,14 +310,22 @@ impl Ltv {
             return self.liquidation_ltv;
         }
 
-        let time_remaining = self.target_timestamp - timestamp;
+        // An immediate change (no ramp) is in effect right away. We can still end up here if the
+        // host clock lags behind the chain, as then `timestamp < target_timestamp`.
+        if self.ramp_duration.is_zero() {
+            return self.liquidation_ltv;
+        }
 
-        // Invariants guaranteed by the branches above:
+        // If the host clock lags behind the chain this can exceed the ramp duration, clamp it so
+        // we never go above the initial liquidation LTV (as is the case onchain).
+        let time_remaining = (self.target_timestamp - timestamp).min(self.ramp_duration);
+
+        // Invariant guaranteed by the branches above:
         //   target < initial         (so `initial - target` does not underflow)
-        //   time_remaining <= ramp_duration
         self.liquidation_ltv
-            + (self.initial_liquidation_ltv - self.liquidation_ltv) * time_remaining
-                / self.ramp_duration
+            + ((self.initial_liquidation_ltv - self.liquidation_ltv) * time_remaining)
+                .checked_div(self.ramp_duration)
+                .unwrap_or(U256::ZERO)
     }
 
     // Calculates the current liquidation ltv for the asset.
@@ -441,5 +449,38 @@ mod test {
 
         // `5775` is the reported number from the Euler UI.
         assert_eq!(lltv, U256::from(5775));
+    }
+
+    #[test]
+    pub fn immediate_lltv_change_does_not_divide_by_zero_when_the_clock_lags() {
+        // An immediate cut: no ramp, the target is the block time of the change.
+        let ltv = Ltv {
+            asset: Address::random(),
+            borrow_ltv: U256::ZERO,
+            liquidation_ltv: U256::from(5000),
+            initial_liquidation_ltv: U256::from(9000),
+            target_timestamp: U256::from(1780000000),
+            ramp_duration: U256::ZERO,
+        };
+
+        // Our clock is a few seconds behind the chain.
+        let time = DateTime::from_timestamp(1780000000 - 5, 0).unwrap();
+        assert_eq!(ltv.calculate_liquidation_ltv(time), U256::from(5000));
+    }
+
+    #[test]
+    pub fn lagging_clock_before_the_ramp_start_is_clamped_to_the_initial_lltv() {
+        let ltv = Ltv {
+            asset: Address::random(),
+            borrow_ltv: U256::ZERO,
+            liquidation_ltv: U256::from(5000),
+            initial_liquidation_ltv: U256::from(9000),
+            target_timestamp: U256::from(1780000000),
+            ramp_duration: U256::from(100),
+        };
+
+        // Our clock is before the start of the ramp (target - ramp_duration).
+        let time = DateTime::from_timestamp(1780000000 - 105, 0).unwrap();
+        assert_eq!(ltv.calculate_liquidation_ltv(time), U256::from(9000));
     }
 }

@@ -200,22 +200,76 @@ impl PriceAsset for EulerPricingApi {
         let output_usd =
             get_euler_price(&self.client, &self.base_url, self.chain_id, output_asset).await?;
 
-        let input_price = U256::from((input_usd.price_usd * 1e18) as u128);
-        let output_price = U256::from((output_usd.price_usd * 1e18) as u128);
-
-        let num =
-            input_amount * input_price * U256::from(10u128).pow(U256::from(output_usd.decimals));
-        let den = output_price * U256::from(10u128).pow(U256::from(input_usd.decimals));
-        let output_amount = num / den;
-
-        Ok(output_amount)
+        convert(input_amount, &input_usd, &output_usd)
     }
+}
+
+/// Converts `input_amount` of the input asset into the output asset, using their USD prices.
+fn convert(
+    input_amount: U256,
+    input_usd: &PriceData,
+    output_usd: &PriceData,
+) -> Result<U256, PricingError> {
+    let input_price = usd_price_to_u256(input_usd)?;
+    let output_price = usd_price_to_u256(output_usd)?;
+
+    let num = input_amount * input_price * U256::from(10u128).pow(U256::from(output_usd.decimals));
+    let den = output_price * U256::from(10u128).pow(U256::from(input_usd.decimals));
+
+    num.checked_div(den).ok_or_else(|| {
+        PricingError::Other(anyhow!(
+            "Could not convert {} into {}, division by zero",
+            input_usd.address,
+            output_usd.address
+        ))
+    })
+}
+
+/// Turns a USD price into a fixed point (1e18) number. A zero, negative or non-finite price would
+/// silently be cast to 0 (or saturate), so we reject those.
+fn usd_price_to_u256(price: &PriceData) -> Result<U256, PricingError> {
+    if !price.price_usd.is_finite() || price.price_usd <= 0.0 {
+        return Err(PricingError::Other(anyhow!(
+            "Pricing API returned an invalid price {} for {}",
+            price.price_usd,
+            price.address
+        )));
+    }
+
+    Ok(U256::from((price.price_usd * 1e18) as u128))
 }
 
 #[cfg(test)]
 mod test {
-    use crate::prices::{EulerPricingApi, PriceAsset};
-    use alloy::primitives::{U256, address};
+    use crate::prices::{EulerPricingApi, PriceAsset, PriceData, convert};
+    use alloy::primitives::{Address, U256, address};
+
+    fn price(price_usd: f64, decimals: u32) -> PriceData {
+        PriceData {
+            chain_id: 1,
+            address: Address::random(),
+            price_usd,
+            decimals,
+            source: String::new(),
+            confidence: None,
+            timestamp: String::new(),
+        }
+    }
+
+    #[test]
+    fn convert_uses_prices_and_decimals() {
+        // 1 USDC (6 decimals, $1) into WETH (18 decimals, $2000) => 0.0005 WETH.
+        let out = convert(U256::from(1_000_000), &price(1.0, 6), &price(2000.0, 18)).unwrap();
+        assert_eq!(out, U256::from(500_000_000_000_000u64));
+    }
+
+    #[test]
+    fn convert_rejects_invalid_prices_instead_of_panicking() {
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(convert(U256::from(1), &price(1.0, 6), &price(invalid, 18)).is_err());
+            assert!(convert(U256::from(1), &price(invalid, 6), &price(1.0, 18)).is_err());
+        }
+    }
 
     #[tokio::test]
     async fn price_usdc_usdt() {
