@@ -24,6 +24,7 @@ endpoint = "https://hermes.pyth.network/"
 [vault_filter]
 mode = "Blacklist"
 items = [
+    { address = "0x2137568666f12fc5a026f5430ae7194f1c1362ab", reason = "Part of a lending cluster left with bad debt after Elixir's deUSD stablecoin collapsed (Nov 2025), following heavy losses at Stream Finance - liquidations here aren't reliable." },
     { address = "0xaba9d2d4b6b93c3dc8976d8eb0690cca56431fe4", reason = "Part of a lending cluster left with bad debt after Elixir's deUSD stablecoin collapsed (Nov 2025), following heavy losses at Stream Finance - liquidations here aren't reliable." },
     { address = "0x6fc9b3a52944a577cd8971fd8fde0819001bc595", reason = "Part of a lending cluster left with bad debt after Elixir's deUSD stablecoin collapsed (Nov 2025), following heavy losses at Stream Finance - liquidations here aren't reliable." },
     { address = "0xe1e549c965a4a0514d9bf80161d32924b8694822", reason = "Part of a lending cluster left with bad debt after Elixir's deUSD stablecoin collapsed (Nov 2025), following heavy losses at Stream Finance - liquidations here aren't reliable." },
