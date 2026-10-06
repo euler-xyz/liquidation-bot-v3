@@ -30,5 +30,9 @@ items = [
     { address = "0x5d3b4bcff6a24a20a98070263d03d474586c9b29", reason = "Part of a lending cluster left with bad debt after a borrower used the insolvent USDX stablecoin as collateral to drain liquidity without repaying - liquidations here aren't reliable." },
     { address = "0xc41f2ba7102e9f9f2d603eb951f955ae205ed272", reason = "Part of a lending cluster left with bad debt after a borrower used the insolvent USDX stablecoin as collateral to drain liquidity without repaying - liquidations here aren't reliable." },
     { address = "0x69a93dbab609266af96f05658b2e22d020de2e19", reason = "Part of a lending cluster left with bad debt after a borrower used the insolvent USDX stablecoin as collateral to drain liquidity without repaying - liquidations here aren't reliable." },
-    { address = "0xc27d44a8aea0cda482600136c0d0876e807f6c1a", reason = "This BSC market was exposed to the same insolvent USDX collateral event that hit other lending markets on BSC - liquidations here aren't reliable." },
+    { address = "0xc27d44a8aea0cda482600136c0d0876e807f6c1a", reason = "Takes Resolv USR collateral (Resolv exploit, Mar 2026); 100% utilisation." }, # Apostro BSC - eUSDC-2
+    { address = "0xc4db46b082b415c16c54c91c5750df8e2f90ef36", reason = "Takes USDX / sUSDX collateral and shares of this cluster's USDX-exposed vaults (USDX depegged, Nov 2025); 100% utilisation, borrowing disabled." }, # Re7 Labs Cluster - eYUSD-2
+    { address = "0xa00c61ad8c560163c3ee798a5eaa63ef81ba41e0", reason = "sUSDX vault in the Re7 Labs BSC cluster (USDX depegged, Nov 2025); no outstanding borrows, listed for completeness." }, # Re7 Labs Cluster - esUSDX-1
+    { address = "0x6078b5de9d10587cb466ecbbf55c95898afe99c2", reason = "Takes Resolv USR collateral (Resolv exploit, Mar 2026)." }, # Apostro BSC - eUSDT-2
+    { address = "0x4051d583ea7cd39b7f6bb4b687d900c9dc211cb3", reason = "Unlisted vault; the THE / stakeTHENA price feeds have stopped updating, so accounts can't be priced." }, # Unlisted - eUSDT-7
 ]

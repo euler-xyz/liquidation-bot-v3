@@ -24,9 +24,14 @@ endpoint = "https://hermes.pyth.network/"
 [vault_filter]
 mode = "Blacklist"
 items = [
-    "0xae120fab8475eeb08d6e6bfc9143d099d3a4ae73", # EVK Vault eUSDC-46 
-    "0x21538A78C26886Be9f09Adc1286B54b4e9bBa255", # EVK Vault eUSDC-81
+    { address = "0xae120fab8475eeb08d6e6bfc9143d099d3a4ae73", reason = "Credifi credit-line vault: borrowers post Credifi credit tokens and borrowing and liquidation run through the token's hook, so defaults are handled by Credifi, not by liquidators." }, # EVK Vault eUSDC-46
+    { address = "0x21538A78C26886Be9f09Adc1286B54b4e9bBa255", reason = "Credifi credit-line vault: borrowers post Credifi credit tokens and borrowing and liquidation run through the token's hook, so defaults are handled by Credifi, not by liquidators." }, # EVK Vault eUSDC-81
     { address = "0xc063c3b3625df5f362f60f35b0bcd98e0fa650fb", reason = "Takes Resolv-issued (USR-linked) collateral. A security incident at Resolv left pricing for that collateral unreliable, so liquidations here can't be trusted." },
     { address = "0x29dbce367f5157b924af5093617bb128477d7a5c", reason = "Takes Resolv-issued (USR-linked) collateral. A security incident at Resolv left pricing for that collateral unreliable, so liquidations here can't be trusted." },
+    { address = "0xffaabc0bfbcec0355129e7653c6f1923ec533b66", reason = "Credifi credit-line vault: borrowers post Credifi credit tokens and borrowing and liquidation run through the token's hook, so defaults are handled by Credifi, not by liquidators." }, # Credifi - eUSDC-77
+    { address = "0x692b9f0c2701699b7a352c9331dfae6a6a163294", reason = "Credit-line vault with ERC-1155 CREDIT certificate collateral; liquidation is disabled (OP_LIQUIDATE hooked to address(0))." }, # Credit-line vault - eUSDC-21
+    { address = "0xcdf89d7a56395becf33d7984460e7a5aa1685e7d", reason = "Unlisted vault; the PIGGY / GHOST price feeds are stale (PriceOracle_TooStale), so accounts can't be priced." }, # Unlisted - ePIGGY-2
+    { address = "0xe4de200c57aafcdc9f60495470d2cf7daa5e3cf8", reason = "Unlisted vault; the GHOST / PIGGY price feeds are stale (PriceOracle_TooStale), so accounts can't be priced." }, # Unlisted - eGHOST-2
+    { address = "0xcf8930030fba9c8599a534304b94972762d79f71", reason = "Unlisted vault; the TBA price feed is stale (PriceOracle_TooStale), so accounts can't be priced. Dust-sized." }, # Unlisted - eUSDC-98
 ]
 
