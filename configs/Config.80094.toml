@@ -28,6 +28,6 @@ items = [
     "0xcd70599d3d8d1a6e3e4dd60d494dbf10e9b0f778", # EVK Vault eHONEY-8
     "0x37dc866cf6fec47dfdc81d4380cf8406d9188929", # EVK Vault eHONEY-10
     "0xb5faa970c515eea59f1af9f2bbe28564a65f131a", # EVK Vault eHONEY-12
-    { address = "0x112b77a77753b092306b1c04bd70215fed4e00a1", reason = "Run by ZeroLend, which shut down in February 2026. The market is no longer maintained and has little liquidity, so liquidations here aren't reliable." },
+    { address = "0x112b77a77753b092306b1c04bd70215fed4e00a1", reason = "Run by ZeroLend, which shut down in February 2026. The market is no longer maintained and has little liquidity, so liquidations here aren't reliable." }, # ZeroLend Prime Market
 ]
 
