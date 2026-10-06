@@ -38,4 +38,8 @@ items = [
     { address = "0xd59f6112375d60e45c2ba9dd5745870c1444362f", reason = "Lends Elixir deUSD (Elixir deUSD collapse, Nov 2025); no outstanding borrows, listed for completeness." }, # Frontier Elixir - edeUSD-1
     { address = "0x5efb3b2899a76e013040e85438cbe308870f5f50", reason = "Collateral-only sdeUSD vault in Frontier Elixir (Elixir deUSD collapse, Nov 2025); listed for completeness." }, # Frontier Elixir - esdeUSD-1
     { address = "0x538f01e0ba3cf3ab5b3837a0d138a3f67b9b8235", reason = "Takes Resolv RLP collateral (Resolv exploit, Mar 2026); dust-sized." }, # Frontier Resolv RLP - eUSDT0
+    { address = "0xaaed48157f1ed7d98d445c3fef719c89e8d1cae8", reason = "Unlisted vault whose creator priced its own WXPL collateral at about $4M per token through an oracle it controls and borrowed the depositors' USDT0 against 1 WXPL. Nothing can be recovered by liquidation." }, # Unlisted - eUSDT0-44
+    { address = "0xe358fc62d0d02e26e095b16addca7ddf3aa16dd9", reason = "Collateral vault created by the same address as eUSDT0-44 for its self-priced WXPL collateral; listed for completeness." }, # Unlisted - eWXPL-5
+    { address = "0xaba58b156154d6b3dee7a1c1f9aaf06c111f11ce", reason = "Unlisted vault whose creator assigned the governor role to an unrelated curator's address, priced its own USDe collateral at about $850k per token through an oracle it controls, and borrowed the depositors' USDT0 against 1 USDe. Nothing can be recovered by liquidation." }, # Unlisted - eUSDT0-46
+    { address = "0xa486beea876d1d51ca2fe7c875145221bdfee684", reason = "Collateral vault created by the same address as eUSDT0-46 for its self-priced USDe collateral; listed for completeness." }, # Unlisted - eUSDe-9
 ]
