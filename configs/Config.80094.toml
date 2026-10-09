@@ -24,9 +24,16 @@ endpoint = "https://hermes.pyth.network/"
 [vault_filter]
 mode = "Blacklist"
 items = [
-    "0x44812cce64fddc7529dd6d41c9b3e1d0de006d92", # EVK Vault eHONEY-9
-    "0xcd70599d3d8d1a6e3e4dd60d494dbf10e9b0f778", # EVK Vault eHONEY-8
-    "0x37dc866cf6fec47dfdc81d4380cf8406d9188929", # EVK Vault eHONEY-10
-    "0xb5faa970c515eea59f1af9f2bbe28564a65f131a", # EVK Vault eHONEY-12
+    { address = "0x44812cce64fddc7529dd6d41c9b3e1d0de006d92", reason = "Credifi CREDIT-token collateral with account-dependent liquidation hook checks. Retained pending verification of actual borrower eligibility and a supported CREDIT collateral unwind; external liquidation is not universally disabled." }, # EVK Vault eHONEY-9
+    { address = "0xcd70599d3d8d1a6e3e4dd60d494dbf10e9b0f778", reason = "Credit-line vault with ERC-1155 CREDIT certificate collateral; liquidation is disabled (OP_LIQUIDATE hooked to address(0))." }, # EVK Vault eHONEY-8
+    { address = "0x37dc866cf6fec47dfdc81d4380cf8406d9188929", reason = "Credifi CREDIT-token collateral with account-dependent liquidation hook checks. Retained pending verification of actual borrower eligibility and a supported CREDIT collateral unwind; external liquidation is not universally disabled." }, # EVK Vault eHONEY-10
+    { address = "0xb5faa970c515eea59f1af9f2bbe28564a65f131a", reason = "Credifi CREDIT-token collateral with account-dependent liquidation hook checks. Retained pending verification of actual borrower eligibility and a supported CREDIT collateral unwind; external liquidation is not universally disabled." }, # EVK Vault eHONEY-12
+    { address = "0x112b77a77753b092306b1c04bd70215fed4e00a1", reason = "Deprecated ZeroLend Prime market. The configured liability and collateral price feeds return FeedNotSupported, preventing ordinary account valuation." }, # ZeroLend Prime Market
+    { address = "0x2247b618251b8d913f3fd10b749e7bfa3e3a28db", reason = "Deprecated ZeroLend Prime market. Its configured liability and collateral price feeds return FeedNotSupported, preventing ordinary account valuation." }, # ZeroLend Prime Market - eHONEY-4
+    { address = "0x1b33d24c4c78a61da80cfa2d0db72ca0851d5fb1", reason = "Deprecated ZeroLend Prime market. Its configured liability and collateral price feeds return FeedNotSupported, preventing ordinary account valuation." }, # ZeroLend Prime Market - eUSDC.e-4
+    { address = "0x1371dd58ce95ecd624340f072f97212a2661a280", reason = "Deprecated MEV Capital market with residual debt. The NECT collateral price path fails its update check, preventing valuation of positions using that collateral." }, # MEV Capital Berachain Cluster - eUSDC.e-1
+    { address = "0x558b16e07b8558b2a54946ca973b7b20b86a8b87", reason = "Deprecated; the PT-sUSDE-25SEP2025 price feed is discontinued (FeedNotSupported), so accounts holding it can't be priced." }, # MEV Capital Berachain Cluster - eUSDe-1
+    { address = "0x6d976915bd9de43de1a60c39e128e320dadda000", reason = "Deprecated; the PT-sUSDE-25SEP2025 price feed is discontinued (FeedNotSupported), so accounts holding it can't be priced." }, # MEV Capital Berachain Cluster - eWETH-1
+    { address = "0x4f652b92a8cd9e251db4d43b2073f689e94b4dba", reason = "Deprecated Tulipa Hive market with dust balances. The LBTC liability price path fails its update check, preventing liability valuation." }, # Tulipa Hive - eLBTC-1
 ]
 
