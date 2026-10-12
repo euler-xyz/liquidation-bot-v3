@@ -199,20 +199,6 @@ pub struct VaultBorrowPosition {
     pub vault: Arc<EVault>,
 }
 
-/// Whether a `LiquidationReasoning` value represents (or, in the case of a lens error,
-/// wraps) a blacklisted status. Recurses into `LensError`'s nested `state` since
-/// `Account::set_status` nests a newer status inside an existing lens error rather than
-/// discarding it.
-fn is_blacklisted_reasoning(reasoning: &LiquidationReasoning) -> bool {
-    match reasoning {
-        LiquidationReasoning::Blacklisted(_) => true,
-        LiquidationReasoning::Error(LiquidationReasoningError::LensError { state, .. }) => {
-            is_blacklisted_reasoning(state)
-        }
-        _ => false,
-    }
-}
-
 impl Account {
     pub fn new(
         address: Address,
@@ -232,13 +218,19 @@ impl Account {
     pub fn set_status(&self, status: LiquidationReasoning) {
         if let Ok(mut s) = self.status.try_write() {
             match (&s.status, &status) {
+                // A blacklisted account is never liquidated, so whatever happens to it
+                // afterwards is irrelevant, the status stays blacklisted.
+                (LiquidationReasoning::Blacklisted(_), _) => {}
+
+                // Being blacklisted overrides every other status, including a lens error.
+                (_, LiquidationReasoning::Blacklisted(_)) => {
+                    *s = AccountStatus::from(status);
+                }
+
                 // If this new value is a lens error, we replace.
                 (
                     _,
-                    LiquidationReasoning::Error(LiquidationReasoningError::LensError {
-                        error,
-                        state,
-                    }),
+                    LiquidationReasoning::Error(LiquidationReasoningError::LensError { .. }),
                 ) => {
                     *s = AccountStatus::from(status);
                 }
@@ -247,7 +239,7 @@ impl Account {
                 (
                     LiquidationReasoning::Error(LiquidationReasoningError::LensError {
                         error,
-                        state,
+                        ..
                     }),
                     _,
                 ) => {
@@ -270,14 +262,12 @@ impl Account {
         }
     }
 
-    /// True if this account is currently marked as blacklisted (directly, or nested inside
-    /// a lens-error status that occurred after it was blacklisted). Blacklisted accounts
-    /// stay tracked and visible via the observability API, but must never be considered for
-    /// liquidation.
+    /// True if this account is marked as blacklisted. Blacklisted accounts stay tracked and
+    /// visible via the observability API, but must never be considered for liquidation.
     pub fn is_blacklisted(&self) -> bool {
         self.status
             .read()
-            .map(|s| is_blacklisted_reasoning(&s.status))
+            .map(|s| matches!(s.status, LiquidationReasoning::Blacklisted(_)))
             .unwrap_or(false)
     }
 }
@@ -402,8 +392,18 @@ mod test {
         assert!(account.is_blacklisted());
     }
 
+    fn lens_error() -> LiquidationReasoning {
+        LiquidationReasoning::Error(LiquidationReasoningError::LensError {
+            error: LensError {
+                vault: Address::random(),
+                query_failure_reason: Bytes::new(),
+            },
+            state: Box::from(LiquidationReasoning::Unknown),
+        })
+    }
+
     #[test]
-    fn is_blacklisted_true_when_nested_inside_a_lens_error() {
+    fn blacklisted_overrides_lens_error() {
         let account = Account::new(
             Address::random(),
             vec![VaultBorrowPosition::generate_random()],
@@ -412,24 +412,42 @@ mod test {
 
         // Simulate a lens error happening first (e.g. from a different vault's query
         // failure)...
-        account.set_status(LiquidationReasoning::Error(
-            LiquidationReasoningError::LensError {
-                error: LensError {
-                    vault: Address::random(),
-                    query_failure_reason: Bytes::new(),
-                },
-                state: Box::from(LiquidationReasoning::Unknown),
-            },
-        ));
+        account.set_status(lens_error());
         assert!(!account.is_blacklisted());
 
-        // ...then the blacklist status being set should nest inside it rather than being
-        // discarded, and still be detected as blacklisted.
+        // ...then the blacklist status should replace it entirely, not nest inside it.
         account.set_status(LiquidationReasoning::Blacklisted(vec![Address::random()]));
-        assert!(
-            account.is_blacklisted(),
-            "Blacklisted status nested inside a lens error should still be detected"
+        assert!(account.is_blacklisted());
+        assert!(matches!(
+            account.status.read().unwrap().status,
+            LiquidationReasoning::Blacklisted(_)
+        ));
+    }
+
+    #[test]
+    fn blacklisted_is_not_overwritten() {
+        let account = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition::generate_random()],
+            vec![],
         );
+        let blacklisted = LiquidationReasoning::Blacklisted(vec![Address::random()]);
+        account.set_status(blacklisted.clone());
+
+        for status in [
+            LiquidationReasoning::Healthy,
+            LiquidationReasoning::Error(LiquidationReasoningError::OracleError {
+                message: "oracle error".to_string(),
+            }),
+            lens_error(),
+        ] {
+            account.set_status(status.clone());
+            assert_eq!(
+                account.status.read().unwrap().status,
+                blacklisted,
+                "Blacklisted status was overwritten by {status:?}"
+            );
+        }
     }
 
     #[test]
