@@ -380,6 +380,46 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    // Checks the blacklist status of a live Berachain account against the vault filter in
+    // the chain's configuration file.
+    async fn berachain_account_blacklist_status() {
+        let account = address!("0x2faa21cd0b04dfcb553be94de200e15f6c518553");
+
+        let rpc = std::env::var("BERACHAIN_RPC").expect("BERACHAIN_RPC must be set");
+        let config = load_configuration_file_for_test(&rpc, 80094).unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(config.rpc_url.clone())
+            .erased();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
+
+        let account = fetch_account(
+            provider,
+            &config.vault_filter,
+            vaults,
+            config.account_lens_address,
+            config.evc_address,
+            account,
+        )
+        .await
+        .expect("Could not fetch account");
+
+        for b in &account.borrows {
+            println!(
+                "borrow: vault={} blacklisted={}",
+                b.vault.address,
+                config.vault_filter.is_blacklisted(b.vault.address)
+            );
+        }
+
+        assert!(
+            account.is_blacklisted(),
+            "Expected the account to be blacklisted"
+        );
+    }
+
     #[test]
     // A blacklisted account must still show up wherever the tracker reports "all" accounts
     // (e.g. the observability API's GET /accounts), just marked, so the dashboard can

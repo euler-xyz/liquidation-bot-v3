@@ -206,21 +206,18 @@ pub async fn fetch_account(
     // Create the account.
     let account = Account::new(account, borrows, collaterals);
 
-    // If an error occured, update the account to contain the lens error.
-    if let Some(error) = lens_error {
+    // If any of the account's borrows are in a blacklisted vault, mark it. This overrides
+    // any lens error, a blacklisted account is never liquidated so the error is irrelevant.
+    if !blacklisted_vaults.is_empty() {
+        account.set_status(LiquidationReasoning::Blacklisted(blacklisted_vaults));
+    } else if let Some(error) = lens_error {
+        // If an error occured, update the account to contain the lens error.
         account.set_status(crate::types::LiquidationReasoning::Error(
             crate::types::LiquidationReasoningError::LensError {
                 error,
                 state: Box::from(LiquidationReasoning::Unknown),
             },
         ));
-    }
-
-    // If any of the account's borrows are in a blacklisted vault, mark it. This is set
-    // after the lens-error status above so `Account::set_status`'s merge logic nests it
-    // correctly instead of one silently overwriting the other.
-    if !blacklisted_vaults.is_empty() {
-        account.set_status(LiquidationReasoning::Blacklisted(blacklisted_vaults));
     }
 
     Ok(account)
