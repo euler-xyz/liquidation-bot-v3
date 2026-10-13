@@ -26,4 +26,6 @@ mode = "Blacklist"
 items = [
     { address = "0x75b6c392f778b8bcf9bdb676f8f128b4dd49ac19", reason = "Collateral is LP tokens (e.g. sMON-wnWMON) whose LTVs are set or ramping to zero; dust-sized market." }, # EVK Vault eWMON-12
     { address = "0x438cedce647491b1d93a73d491ec19a50194c222", reason = "Collateral is LP tokens (e.g. wnAUSD-wnUSDC-wnUSDT0) whose LTVs are set or ramping to zero; dust-sized market." }, # EVK Vault eAUSD-11
+    { address = "0x852e9d248b1a294566737633c2f829ea8257553b", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDC-14
+    { address = "0x7a5ab5bd7f2db9960813763e86eb789192f56768", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eWETH-6
 ]

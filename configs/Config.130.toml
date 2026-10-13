@@ -21,3 +21,9 @@ enable_observability_api = true
 address = "0x2880aB155794e7179c9eE2e38200202908C17B43"
 endpoint = "https://hermes.pyth.network/"
 
+
+[vault_filter]
+mode = "Blacklist"
+items = [
+    { address = "0xfea428f58c678b3f14fd750200bf14906f21e53c", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSD₮0-2
+]
