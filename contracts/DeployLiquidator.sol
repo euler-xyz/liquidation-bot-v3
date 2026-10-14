@@ -3,20 +3,22 @@
 pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
-import {Test} from "forge-std/Test.sol";
+import {console2} from "forge-std/console2.sol";
 
 import {Liquidator} from "./Liquidator.sol";
 
-import "forge-std/console2.sol";
-
 contract DeployLiquidator is Script {
-    function run() public {
+    error NoCodeAt(string name, address target);
+
+    function run() public returns (Liquidator liquidator) {
         uint256 deployerPrivateKey = vm.envUint("LIQUIDATOR_PRIVATE_KEY");
 
-        address evcAddress = 0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383;
-        address swapperAddress = 0x719F8b330CcA71cb6195D032A43194C7D3F9Fb45;
-        address swapVerifierAddress = 0x786c900d7D348662703C38B46f24c1cda2C582AB;
-        address pyth = 0x4305FB66699C3B2702D4d05CF36551390A4c69C6;
+        address evcAddress = vm.envAddress("EVC_ADDRESS");
+        address swapperAddress = vm.envAddress("SWAPPER_ADDRESS");
+        address swapVerifierAddress = vm.envAddress("SWAP_VERIFIER_ADDRESS");
+        // Required even on a chain without Pyth, where it is the zero address: the bot then
+        // expects `PYTH()` to be zero and its config to have no `[pyth]` table.
+        address pyth = vm.envAddress("PYTH_ADDRESS");
 
         address deployer = vm.addr(deployerPrivateKey);
         vm.startBroadcast(deployerPrivateKey);
@@ -25,12 +27,32 @@ contract DeployLiquidator is Script {
         console2.log("Gas before: ", beforeGas);
         console2.log("Gas price: ", tx.gasprice);
 
-        Liquidator liquidator = new Liquidator(deployer, swapperAddress, swapVerifierAddress, evcAddress, pyth);
+        liquidator = deploy(deployer, evcAddress, swapperAddress, swapVerifierAddress, pyth);
         uint256 afterGas = gasleft();
         console2.log("Gas after: ", afterGas);
 
         console2.log("Total gas cost: ", (beforeGas - afterGas) * tx.gasprice);
 
         console2.log("Liquidator deployed at: ", address(liquidator));
+        vm.stopBroadcast();
+    }
+
+    function deploy(
+        address owner,
+        address evcAddress,
+        address swapperAddress,
+        address swapVerifierAddress,
+        address pyth
+    ) public returns (Liquidator) {
+        requireCode("EVC_ADDRESS", evcAddress);
+        requireCode("SWAPPER_ADDRESS", swapperAddress);
+        requireCode("SWAP_VERIFIER_ADDRESS", swapVerifierAddress);
+        if (pyth != address(0)) requireCode("PYTH_ADDRESS", pyth);
+
+        return new Liquidator(owner, swapperAddress, swapVerifierAddress, evcAddress, pyth);
+    }
+
+    function requireCode(string memory name, address target) internal view {
+        if (target.code.length == 0) revert NoCodeAt(name, target);
     }
 }

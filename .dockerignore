@@ -9,3 +9,6 @@ Dockerfile
 .env
 .env.*
 *.log
+lib/
+out/
+cache/

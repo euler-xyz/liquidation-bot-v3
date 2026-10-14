@@ -1,0 +1,12 @@
+[profile.default]
+src = "contracts"
+test = "contracts/test"
+out = "out"
+libs = ["lib"]
+remappings = ["forge-std/=lib/forge-std/src/"]
+
+# solc 0.8.33 with the optimizer off reproduces the bytecode of every deployed Liquidator (metadata
+# aside). Changing these changes the bytecode that explorer verification expects.
+solc = "0.8.33"
+optimizer = false
+evm_version = "cancun"
