@@ -144,13 +144,13 @@ Apart from `RPC_URL_<chainId>`, a new chain needs no new secret.
 
 ## 4. Build and deploy
 
-Build the image from the `Dockerfile` and push it to the ECR repository the deployment pulls from. The image contains every `configs/Config.<chainId>.toml`, so a new chain needs an image built from a commit that has its config.
+On every push to `master`, `.github/workflows/build-image.yml` builds the Docker image and pushes it to ECR as `<ECR_REPOSITORY>:<commit SHA>`. It never runs on pull requests or in forks. The image contains every `configs/Config.<chainId>.toml`, so a new chain needs an image built from a commit that has its config.
 
 The deployment is the euler-terraform stack `app/stacks/liquidation_bot_fargate_v3`:
 
 1. Add the chain id to `chain_ids` in `variables.tf`.
 2. Add it to `chain_priority_map` in `main.tf` with an unused priority. The map gives each chain a fixed listener rule priority, so adding a chain never shifts the others. Priorities must be unique on the load balancer listener, so pick one no other rule uses. A chain missing from the map fails the plan.
-3. Apply with `docker_image_link` set to that image. Terraform reads Doppler at apply time; a new Doppler value reaches the tasks only at the next apply.
+3. Apply with `docker_image_link` set to `<registry>/<ECR_REPOSITORY>:<commit SHA>`. Terraform reads Doppler at apply time; a new Doppler value reaches the tasks only at the next apply.
 
 Per chain this creates a target group `liquidation-bot-v3-<chainId>`, a listener rule for the host `<chainId>-liquidations.euler.finance`, and the ECS service `liquidation-bot-v3-<chainId>-<environment>`.
 
@@ -180,3 +180,44 @@ euler-risk-dashboard lists the bots it monitors in `NEXT_PUBLIC_BOT_INSTANCES`, 
 6. `/health` reports `Healthy`.
 7. The dashboard lists the chain.
 
+## One-time setup for the image workflow
+
+The workflow signs in to AWS with GitHub OIDC; there are no stored keys. A repository admin sets up:
+
+1. **OIDC provider.** The AWS account trusts `token.actions.githubusercontent.com` with audience `sts.amazonaws.com`. Skip this if the account already has it.
+2. **IAM role** for the workflow, with this trust policy:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+             "token.actions.githubusercontent.com:sub": "repo:euler-xyz/liquidation-bot-v3:ref:refs/heads/master"
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+   The `sub` condition limits the role to pushes to `master` in this repository. If the organization customizes its OIDC subject claim, match that format instead. The role's permissions:
+   - `ecr:GetAuthorizationToken` on `*`
+   - on the bot's repository: `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload` and `ecr:PutImage`
+3. **ECR repository.** Use the one the `liquidation_bot_fargate_v3` stack deploys from, in the role's account. If it holds only this workflow's images, make its tags immutable: each tag is a commit SHA and never changes. A re-run for a commit whose image is already pushed then fails at the push step.
+4. **Repository variables**, under Settings → Secrets and variables → Actions → Variables:
+
+   | Variable | Value |
+   |---|---|
+   | `AWS_ROLE_ARN` | ARN of the role from step 2 |
+   | `AWS_REGION` | region of the ECR registry |
+   | `ECR_REPOSITORY` | name of the repository from step 3 |
+
+Until all three variables are set, the workflow fails at its first step and names the missing ones. The Rust build is cached in the GitHub Actions cache, which needs no setup.

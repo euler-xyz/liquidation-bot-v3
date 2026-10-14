@@ -120,6 +120,8 @@ A multi-stage Dockerfile is included. It builds the bot, copies every file from 
 
 If you do not want to use Doppler, the Dockerfile is straightforward to adapt: replace the `doppler run --` entrypoint with a direct invocation of `liquidation-bot-v3` and pass environment variables in however you prefer. The production deployment does this: its task definition runs the binary directly and passes the environment itself.
 
+On every push to `master`, the `build-image` workflow builds the image and pushes it to ECR, tagged with the commit SHA. Deploying that image, and the workflow's one-time setup, are described in [docs/adding-a-chain.md](docs/adding-a-chain.md).
+
 ## Liquidator contract
 
 The bot submits liquidations through the `Liquidator` contract in `contracts/`, one deployment per chain. The contracts build with [Foundry](https://getfoundry.sh/):
