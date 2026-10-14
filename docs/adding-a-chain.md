@@ -114,12 +114,11 @@ Every field the bot parses (`Config` in `src/config.rs`):
 
 The Pyth API key is not a config field: `PYTH_API_KEY` fills it when `[pyth]` is present.
 
+A file in `configs/` that no bot runs carries `deployed = false`. The bot ignores the key, and the config tests skip the file.
+
 At startup the bot checks the RPC's chain id, that every configured contract address has code, and that the Liquidator's swapper, EVC and Pyth match the config. It exits if any check fails.
 
-In the same PR:
-
-- Add the chain to `validate_configuration_files` in `src/config.rs`, with a public RPC. `cargo test validate_configuration_files` runs the startup checks against every shipped config.
-- Add the chain to [Supported chains](../README.md#supported-chains) in the README.
+In the same PR, add the chain to [Supported chains](../README.md#supported-chains) in the README. The tests pick up the new file from `configs/` with no test change: `cargo test` checks that it loads, and with `RPC_URL_<chainId>` set, `cargo test validate_configuration_files` runs the startup checks against it.
 
 Optionally, run the bot locally against the chain without sending transactions. Set `CHAIN_ID`, `RPC_URL_<chainId>`, `SUBGRAPH_URL_PREFIX`, a throwaway `EOA_ADDRESS` and `EOA_PRIVATE_KEY` pair, and `SIMULATION_MODE=true`. Start the binary from `configs/` and watch `/health` and `/accounts` on port 3000.
 

@@ -1,3 +1,6 @@
+# No bot runs on this chain. The bot ignores this key; the config tests skip the file.
+deployed = false
+
 swap_url = "https://swap.euler.finance"
 pricing_url = "https://v3.euler.finance"
 subgraph_url_path = "subgraphs/euler-simple-swell/latest/gn"

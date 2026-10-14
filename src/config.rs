@@ -419,16 +419,17 @@ pub fn load_configuration_file_for_test(rpc_url: &str, chain_id: u64) -> anyhow:
 #[cfg(test)]
 mod test {
     use crate::config::load_configuration_file_for_test;
+    use figment::{
+        Figment,
+        providers::{Format, Toml},
+    };
+    use std::path::Path;
 
     #[test]
     /// `VaultFilter.items` must keep accepting the original bare-address form for backwards
     /// compatibility, while also accepting a table form that carries an optional reason.
     fn vault_filter_items_support_bare_address_and_optional_reason() {
         use crate::config::{VaultFilter, VaultFilterMode};
-        use figment::{
-            Figment,
-            providers::{Format, Toml},
-        };
 
         let toml = r#"
             mode = "Blacklist"
@@ -450,58 +451,81 @@ mod test {
     }
 
     #[test]
-    /// Loading the mainnet (chain id 1) config should pick up the `reason` strings attached
-    /// to its blacklisted vault filter entries, not just the bare addresses.
-    fn chain_1_config_loads_vault_filter_reasons() {
-        use crate::config::VaultFilterMode;
+    /// Every deployed config loads, and a vault filter reason, where one is given, is not blank.
+    fn deployed_configs_load_with_non_blank_reasons() {
+        for chain_id in deployed_chain_ids() {
+            let config = load_configuration_file_for_test("https://example.com", chain_id)
+                .unwrap_or_else(|error| panic!("Config.{chain_id}.toml does not load: {error}"));
 
-        let config = load_configuration_file_for_test("https://example.com", 1)
-            .expect("Could not load the chain id 1 config");
-
-        assert_eq!(config.chain_id, 1);
-        assert!(matches!(config.vault_filter.mode, VaultFilterMode::Blacklist));
-        assert!(
-            !config.vault_filter.items.is_empty(),
-            "Expected the chain id 1 vault filter to have at least one entry"
-        );
-
-        for item in &config.vault_filter.items {
-            let reason = item
-                .reason()
-                .unwrap_or_else(|| panic!("Vault {} is missing a reason", item.address()));
-            assert!(
-                !reason.trim().is_empty(),
-                "Vault {} has an empty reason",
-                item.address()
-            );
+            for item in &config.vault_filter.items {
+                assert!(
+                    item.reason().is_none_or(|reason| !reason.trim().is_empty()),
+                    "Config.{chain_id}.toml: vault {} has a blank reason",
+                    item.address()
+                );
+            }
         }
     }
 
     #[tokio::test]
-    /// Validates the configuration files against public rpcs.
+    /// Runs the bot's startup checks against each deployed config whose `RPC_URL_<chainId>` is
+    /// set. Chains without one are skipped.
     async fn validate_configuration_files() {
-        validate_configuration_file("https://eth.blockrazor.xyz", 1).await;
-        validate_configuration_file("https://bsc.api.pocket.network", 56).await;
-        validate_configuration_file("https://unichain-rpc.publicnode.com", 130).await;
-        validate_configuration_file("https://rpc4.monad.xyz", 143).await;
-        validate_configuration_file("https://rpc.soniclabs.com", 146).await;
-        validate_configuration_file("https://rpc.tac.build", 239).await;
-        validate_configuration_file("https://rpc.hypurrscan.io", 999).await;
-        validate_configuration_file("https://base.api.pocket.network", 8453).await;
-        validate_configuration_file("https://rpc.plasma.to", 9745).await;
-        validate_configuration_file("https://public-arb-mainnet.fastnode.io", 42161).await;
-        validate_configuration_file("https://avalanche-c-chain-rpc.publicnode.com", 43114).await;
-        validate_configuration_file("https://linea.rpc.sentio.xyz", 59144).await;
-        validate_configuration_file("https://rpc.gobob.xyz", 60808).await;
-        validate_configuration_file("https://rpc.berachain.com", 80094).await;
+        let mut checked = Vec::new();
+        let mut failures = Vec::new();
+
+        for chain_id in deployed_chain_ids() {
+            let Ok(rpc_url) = std::env::var(format!("RPC_URL_{chain_id}")) else {
+                continue;
+            };
+
+            if let Err(error) = validate_configuration_file(&rpc_url, chain_id).await {
+                // RPC URLs usually carry an API key.
+                let error = format!("{error:#}").replace(&rpc_url, &format!("$RPC_URL_{chain_id}"));
+                failures.push(format!("chain {chain_id}: {error}"));
+            }
+            checked.push(chain_id);
+        }
+
+        println!("Checked chains: {checked:?}");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
-    async fn validate_configuration_file(rpc_url: &str, chain_id: u64) {
-        println!("Validating {}", chain_id);
-        load_configuration_file_for_test(rpc_url, chain_id)
-            .unwrap()
+    async fn validate_configuration_file(rpc_url: &str, chain_id: u64) -> anyhow::Result<()> {
+        load_configuration_file_for_test(rpc_url, chain_id)?
             .validate_config()
             .await
-            .unwrap();
+    }
+
+    fn deployed_chain_ids() -> Vec<u64> {
+        let mut chain_ids: Vec<u64> = std::fs::read_dir("./configs")
+            .expect("Could not read ./configs")
+            .map(|entry| entry.expect("Could not read an entry of ./configs").path())
+            .filter_map(|path| {
+                let chain_id: u64 = path
+                    .file_name()?
+                    .to_str()?
+                    .strip_prefix("Config.")?
+                    .strip_suffix(".toml")?
+                    .parse()
+                    .ok()?;
+                is_deployed(&path).then_some(chain_id)
+            })
+            .collect();
+        chain_ids.sort_unstable();
+
+        assert!(
+            !chain_ids.is_empty(),
+            "No deployed Config.<chainId>.toml in ./configs"
+        );
+        chain_ids
+    }
+
+    fn is_deployed(config_file: &Path) -> bool {
+        Figment::from(Toml::file(config_file))
+            .find_value("deployed")
+            .ok()
+            .and_then(|value| value.to_bool())
+            .unwrap_or(true)
     }
 }

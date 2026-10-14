@@ -147,7 +147,7 @@ CORS is open to any origin. The API is read-only.
 
 ## Supported chains
 
-The bot runs on Ethereum (1), BSC (56), Unichain (130), Monad (143), Sonic (146), TAC (239), HyperEVM (999), Base (8453), Plasma (9745), Arbitrum (42161), Avalanche (43114), Linea (59144), BOB (60808) and Berachain (80094). TAC and BOB have no Pyth deployment. `configs/Config.1923.toml` (Swell) is not deployed and does not load, since it has no `utils_lens_address`.
+The bot runs on Ethereum (1), BSC (56), Unichain (130), Monad (143), Sonic (146), TAC (239), HyperEVM (999), Base (8453), Plasma (9745), Arbitrum (42161), Avalanche (43114), Linea (59144), BOB (60808) and Berachain (80094). TAC and BOB have no Pyth deployment. `configs/Config.1923.toml` (Swell) is marked `deployed = false`: no bot runs on it, and it does not load, since it has no `utils_lens_address`.
 
 Adding a chain takes a Liquidator deployment, a config file, a funded wallet and deployment changes outside this repository. See [docs/adding-a-chain.md](docs/adding-a-chain.md).
 
@@ -157,6 +157,10 @@ Adding a chain takes a Liquidator deployment, a config file, a funded wallet and
 cargo test
 ```
 
-The configuration validation test exercises every deployed chain's config file against a public RPC for its chain. Some tests run against live chains and fail when their RPC URL is unset: `MAINNET_RPC`, `BASE_RPC` and `BERACHAIN_RPC`. The Pyth price test uses `PYTH_API_KEY`, and the transaction dispatcher tests need `anvil` on `PATH`.
+The config tests read every `configs/Config.<chainId>.toml` not marked `deployed = false`. Each one must load. `validate_configuration_files` also runs the bot's startup checks against each config whose `RPC_URL_<chainId>` is set, and skips the others.
+
+The fork tests pin a mainnet block and fail when `MAINNET_RPC` is unset. The transaction dispatcher tests need `anvil` on `PATH`.
+
+Tests that read live state at the latest block (accounts, the Base subgraph, the pricing API, Pyth) are ignored by default. Run them with `cargo test -- --ignored`; each ignore reason names the variables it needs (`MAINNET_RPC`, `BASE_RPC`, `BERACHAIN_RPC`, `PYTH_API_KEY`).
 
 The contracts are tested with `forge test`.
