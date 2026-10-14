@@ -48,5 +48,8 @@ items = [
     { address = "0xc364fd9637fe562a2d5a1cbc7d1ab7f32be900ef", reason = "Collateral-only lstRZR vault in deprecated Rezerve Markets; no outstanding borrows or configured collateral LTVs. Listed for completeness." }, # Rezerve Markets - elstRZR-1
     { address = "0xf9caf8dd6c8ddf8e03f6304a926a0c263374e6cc", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDT-37
     { address = "0xf7d5113f9d04dcc1aeebc3a34aa7b523e32edb2b", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDC-112
+    { address = "0xa2709c6305b1607e51adb1eb215430f21cb74f31", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eWBTC-14
+    { address = "0xc97af70ab043927a5d9b682e77d1af3c52559a4e", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eWETH-42
+    { address = "0xc9d8768989ad7a202a808fb35c51bf5ed56055bd", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDe-12
 ]
 

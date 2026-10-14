@@ -33,5 +33,6 @@ items = [
     { address = "0xe4de200c57aafcdc9f60495470d2cf7daa5e3cf8", reason = "Unlisted vault; the GHOST / PIGGY price feeds are stale (PriceOracle_TooStale), so accounts can't be priced." }, # Unlisted - eGHOST-2
     { address = "0xcf8930030fba9c8599a534304b94972762d79f71", reason = "Unlisted vault; the TBA price feed is stale (PriceOracle_TooStale), so accounts can't be priced. Dust-sized." }, # Unlisted - eUSDC-98
     { address = "0x946dc9eb7834d4563d71a4f263cf4f8a51f85446", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDC-24
+    { address = "0xc460a5e894ff62e7d5392096efe285b5352545ef", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eWETH-16
 ]
 
