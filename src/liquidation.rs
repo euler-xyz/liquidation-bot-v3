@@ -431,6 +431,7 @@ mod test {
     };
 
     #[tokio::test]
+    #[ignore = "reads a live mainnet account at the latest block and quotes the live swap API; run with MAINNET_RPC set and --ignored"]
     async fn test_prepare_liquidation() {
         let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let chain_id = 1;
@@ -507,6 +508,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "reads a live mainnet account at the latest block and quotes the live swap API and Pyth; run with MAINNET_RPC and PYTH_API_KEY set and --ignored"]
     async fn test_prepare_liquidation_with_pyth() {
         let rpc_url = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
         let chain_id = 1;

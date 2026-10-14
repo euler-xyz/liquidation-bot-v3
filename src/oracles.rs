@@ -637,11 +637,15 @@ mod test {
         types::OracleIdentifier,
     };
 
-    const MAINNET_RPC_ENDPOINT: &str = "https://eth.rpc.blxrbdn.com";
     const MAINNET_ORACLE_LENS: Address = address!("0x30E6dFB84782A31d561536f64F47231451F7b48A");
     const MAINNET_PYTH: Address = address!("0x4305FB66699C3B2702D4d05CF36551390A4c69C6");
 
+    fn mainnet_rpc() -> String {
+        std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set")
+    }
+
     #[tokio::test]
+    #[ignore = "resolves an oracle on live mainnet at the latest block; run with MAINNET_RPC set and --ignored"]
     async fn identify_pyth_oracle() {
         let oracle = OracleIdentifier {
             base_asset: address!("0x96F6eF951840721AdBF46Ac996b59E0235CB985C"),
@@ -650,7 +654,7 @@ mod test {
         };
 
         let provider = ProviderBuilder::new()
-            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
+            .connect_http(mainnet_rpc().parse().unwrap())
             .erased();
 
         let result = oracle
@@ -750,6 +754,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "reads live mainnet and Pyth prices; run with MAINNET_RPC and PYTH_API_KEY set and --ignored"]
     async fn fetch_price_from_pyth_oracle() {
         let oracle = OracleIdentifier {
             base_asset: address!("0x96F6eF951840721AdBF46Ac996b59E0235CB985C"),
@@ -758,7 +763,7 @@ mod test {
         };
 
         let provider = ProviderBuilder::new()
-            .connect_http(MAINNET_RPC_ENDPOINT.parse().unwrap())
+            .connect_http(mainnet_rpc().parse().unwrap())
             .erased();
 
         let pyth = PythConfig {

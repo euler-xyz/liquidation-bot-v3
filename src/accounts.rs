@@ -381,6 +381,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "reads a live Berachain account at the latest block; run with BERACHAIN_RPC set and --ignored"]
     // Checks the blacklist status of a live Berachain account against the vault filter in
     // the chain's configuration file.
     async fn berachain_account_blacklist_status() {
@@ -549,6 +550,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "reads a live Base account at the latest block, whose health can change; run with BASE_RPC set and --ignored"]
     async fn fetch_and_check_single_wei_precision() {
         // Base.
         let (_, solvency) = fetch_and_log(

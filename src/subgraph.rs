@@ -114,6 +114,7 @@ mod test {
     const ENDPOINT: &str = "https://api.goldsky.com/api/public/project_cm4iagnemt1wp01xn4gh1agft/subgraphs/euler-simple-base/latest/gn";
 
     #[tokio::test]
+    #[ignore = "queries the live Base subgraph; run with --ignored"]
     async fn fetch_latest_block() {
         let latest_indexed_block = fetch_latest_indexed_block(Url::parse(ENDPOINT).unwrap())
             .await
@@ -123,6 +124,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[ignore = "queries the live Base subgraph; run with --ignored"]
     async fn fetch_vault_balances() {
         let latest_indexed_block = fetch_latest_indexed_block(Url::parse(ENDPOINT).unwrap())
             .await
