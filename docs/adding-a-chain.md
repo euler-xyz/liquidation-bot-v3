@@ -212,11 +212,11 @@ The workflow signs in to AWS with GitHub OIDC; there are no stored keys. A repos
    - `ecr:GetAuthorizationToken` on `*`
    - on the bot's repository: `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload` and `ecr:PutImage`
 3. **ECR repository.** Use the one the `liquidation_bot_fargate_v3` stack deploys from, in the role's account. If it holds only this workflow's images, make its tags immutable: each tag is a commit SHA and never changes. A re-run for a commit whose image is already pushed then fails at the push step.
-4. **Repository variables**, under Settings → Secrets and variables → Actions → Variables:
+4. **Repository secret** `AWS_ROLE_ARN`, the ARN of the role from step 2, under Settings → Secrets and variables → Actions → Secrets. It's a secret, not a variable, so the account ID in it stays masked in this public repository's Actions logs.
+5. **Repository variables**, under Settings → Secrets and variables → Actions → Variables:
 
    | Variable | Value |
    |---|---|
-   | `AWS_ROLE_ARN` | ARN of the role from step 2 |
    | `AWS_REGION` | region of the ECR registry |
    | `ECR_REPOSITORY` | name of the repository from step 3 |
 
