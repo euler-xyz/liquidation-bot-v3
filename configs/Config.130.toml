@@ -21,3 +21,12 @@ enable_observability_api = true
 address = "0x2880aB155794e7179c9eE2e38200202908C17B43"
 endpoint = "https://hermes.pyth.network/"
 
+
+[vault_filter]
+mode = "Blacklist"
+items = [
+    { address = "0xfea428f58c678b3f14fd750200bf14906f21e53c", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSD₮0-2
+    { address = "0xa6be43f0505da6e37b0805e1a0b7aacb3065f0c8", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDC-5
+    { address = "0x2bb434603b4bf062d777bdc5af23af9cabd27fe2", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eWETH-5
+    { address = "0xca53397e513590d99bac7b465909c42967d1f4e7", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eweETH-2
+]
