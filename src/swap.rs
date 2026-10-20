@@ -142,6 +142,20 @@ pub struct MulticallItem {
 //     pub provider_name: String,
 // }
 
+/// The part of the seized collateral, in basis points, that is left out of the swap.
+const SWAP_INPUT_HAIRCUT_BPS: u64 = 1;
+
+/// Calculates the amount of collateral to swap for a liquidation.
+///
+/// The seized collateral is calculated before the swap quote is fetched, and the liquidation is
+/// executed later still. When the collateral is priced through a rate that accrues every block
+/// (e.g. an ERC4626 exchange rate) the collateral seized at execution is slightly less than
+/// calculated, so swapping the full amount would revert. The leftover is swept to the
+/// `unused_input_receiver`.
+fn swap_input_amount(seized_collateral: U256) -> U256 {
+    seized_collateral - seized_collateral * U256::from(SWAP_INPUT_HAIRCUT_BPS) / U256::from(10_000)
+}
+
 /// Calculates the profit (in collateral-asset units) of a liquidation where the
 /// seized collateral and the repaid debt are the same asset, so no swap is needed.
 ///
@@ -374,7 +388,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             origin: self.liquidator_eoa,
             account_in: Address::ZERO,
             account_out: self.swapper_address,
-            amount: liq.seized_collateral_amount(),
+            amount: swap_input_amount(liq.seized_collateral_amount()),
             target_debt: U256::ZERO,
             current_debt: liq.repay_amount(),
             swapper_mode: "0".to_string(),
@@ -515,7 +529,10 @@ mod test {
     };
     use anyhow::Result;
 
-    use super::{EulerSwapApi, SwapApiResponse, SwapQuote, SwapQuoteProvider, same_asset_profit};
+    use super::{
+        EulerSwapApi, SwapApiResponse, SwapQuote, SwapQuoteProvider, same_asset_profit,
+        swap_input_amount,
+    };
     use crate::{
         liquidation::{ExpectedProfit, PreparedLiquidation},
         prices::{PriceAsset, PricingError},
@@ -547,6 +564,20 @@ mod test {
     #[test]
     fn same_asset_profit_shortfall_is_none() {
         assert_eq!(same_asset_profit(U256::from(99), U256::from(100)), None);
+    }
+
+    // ── swap_input_amount ───────────────────────────────────────────────────
+
+    #[test]
+    fn swap_input_amount_leaves_out_one_bps() {
+        assert_eq!(swap_input_amount(U256::from(1_000_000)), U256::from(999_900));
+    }
+
+    #[test]
+    fn swap_input_amount_rounds_haircut_down() {
+        // Amounts too small for a full bps are swapped completely.
+        assert_eq!(swap_input_amount(U256::from(9_999)), U256::from(9_999));
+        assert_eq!(swap_input_amount(U256::ZERO), U256::ZERO);
     }
 
     // ── find_swap: same-asset branch ────────────────────────────────────────
