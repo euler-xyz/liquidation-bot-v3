@@ -34,5 +34,8 @@ items = [
     { address = "0xcf8930030fba9c8599a534304b94972762d79f71", reason = "Unlisted vault; the TBA price feed is stale (PriceOracle_TooStale), so accounts can't be priced. Dust-sized." }, # Unlisted - eUSDC-98
     { address = "0x946dc9eb7834d4563d71a4f263cf4f8a51f85446", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDC-24
     { address = "0xc460a5e894ff62e7d5392096efe285b5352545ef", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eWETH-16
+    { address = "0x67af8ff5b13e9e697aa461e866fe0f41f68493c3", reason = "All operations are disabled (hookedOps 0x7FFF with hook target address(0)), so every liquidation reverts E_OperationDisabled. Dust-sized." }, # ewtSPYM-1
+    { address = "0xb5a2fda01456aee7437e740b73ae8fb77fb135db", reason = "All operations are disabled (hookedOps 0x7FFF with hook target address(0)), so every liquidation reverts E_OperationDisabled. Dust-sized." }, # ewtMSTR-1
+    { address = "0xc572516b2ea4613d1f206b1f47309d310fa452ac", reason = "All operations are disabled (hookedOps 0x7FFF with hook target address(0)), so every liquidation reverts E_OperationDisabled. Dust-sized." }, # ewtCOIN-1
 ]
 

@@ -23,4 +23,10 @@ enable_observability_api = true
 mode = "Blacklist"
 items = [
     "0xdd6eaef38f94d4724124cec14c819818714537ff", # Edge UltraYield Cluster - USDT
+    { address = "0xe2e106a9ec7bc7f5dcdf5a20ea007b833ccf4f1f", reason = "Its RedStone wstETH price feed reverts FeedNotSupported, so positions using it can't be priced or liquidated." }, # ewstETH-2
+    { address = "0x41068b2c61d535a370e39415e090ec2100b57934", reason = "Its RedStone wstETH price feed reverts FeedNotSupported, so positions using it can't be priced or liquidated." }, # ewstETH-1
+    { address = "0x994a7766a0e658098ca01a1adf114abd29e5629e", reason = "Its RedStone cbBTC price feed reverts FeedNotSupported, so positions using it can't be priced or liquidated." }, # ecbBTC-2
+    { address = "0x522e6437b80b11c10aafdb321c3610b85127e4cd", reason = "Its RedStone LBTC price feed reverts FeedNotSupported, so positions using it can't be priced or liquidated." }, # eLBTC-1
+    { address = "0x2c58807b0556fe2e4b10dbf8ec40c1e900022c51", reason = "Its RedStone yUSD price feed reverts FeedNotSupported, so positions using it can't be priced or liquidated." }, # eyUSD-3
+    { address = "0xf055eaa0802fd2a1a6320d2308925831092a534c", reason = "Its RedStone wrsETH price feed reverts FeedNotSupported, so positions using it can't be priced or liquidated." }, # ewrsETH-2
 ]

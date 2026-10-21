@@ -33,4 +33,6 @@ items = [
     { address = "0xc4db46b082b415c16c54c91c5750df8e2f90ef36", reason = "Takes USDX / sUSDX collateral and shares of this cluster's USDX-exposed vaults (USDX depegged, Nov 2025); 100% utilisation, borrowing disabled." }, # Re7 Labs Cluster - eYUSD-2
     { address = "0xa00c61ad8c560163c3ee798a5eaa63ef81ba41e0", reason = "sUSDX vault in the Re7 Labs BSC cluster (USDX depegged, Nov 2025); no outstanding borrows, listed for completeness." }, # Re7 Labs Cluster - esUSDX-1
     { address = "0x4051d583ea7cd39b7f6bb4b687d900c9dc211cb3", reason = "Unlisted market with stakeTHENA collateral. Its nested THE price feed and the resulting stakeTHENA quote revert InvalidLastUpdateDetails, preventing collateral valuation." }, # Unlisted - eUSDT-7
+    { address = "0xb9c596697d5127d3ceb9babe23868de000ee2181", reason = "Lends THE in the same unlisted cluster as eUSDT-7; the THE price feed reverts InvalidLastUpdateDetails, so neither the debt nor its stakeTHENA collateral can be valued." }, # eTHE-1
+    { address = "0x5388ff3ff7e137a86571d050b2f71ce11f44d03c", reason = "stakeTHENA collateral vault for the unlisted eUSDT-7 / eTHE-1 markets; the nested THE price feed reverts InvalidLastUpdateDetails, preventing collateral valuation." }, # estakeTHENA-1
 ]
