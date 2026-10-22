@@ -22,8 +22,6 @@ enable_observability_api = true
 [vault_filter]
 mode = "Blacklist"
 items = [
-    { address = "0xe1cecd3644fdcfab4c6206e693a5a4fa90e9c710", reason = "Its oracle router reverts PriceOracle_TooStale (feed last updated ~440 days ago), so no position in it can be priced or liquidated. Borrowed by a sub-account of the vault's own governor." }, # eUSDC.e-1
-    { address = "0xf004756aedd7375e4039e942bab6cccfd1e165bb", reason = "Its oracle router reverts PriceOracle_TooStale (feed last updated ~204 days ago), so no position in it can be priced or liquidated. Borrowed by a sub-account of the vault's own governor." }, # esatUSD-2
-    { address = "0x615a898ca1f70b1d15545dade04b7d04ed856539", reason = "Its oracle router reverts PriceOracle_TooStale (feed last updated ~204 days ago), so no position in it can be priced or liquidated. Borrowed by a sub-account of the vault's own governor." }, # eWBTC-9
-    { address = "0xced95f4cf51de12f0a0af62f1b53828491d21ca9", reason = "Its oracle router reverts PriceOracle_TooStale (feed last updated ~204 days ago), so no position in it can be priced or liquidated. Borrowed by a sub-account of the vault's own governor." }, # eLBTC-3
+    { address = "0xe1cecd3644fdcfab4c6206e693a5a4fa90e9c710", reason = "Its debt asset (USDC.e) quote reverts PriceOracle_TooStale (feed last updated ~440 days ago), so its borrowers can't be priced or liquidated." }, # eUSDC.e-1
+    { address = "0xced95f4cf51de12f0a0af62f1b53828491d21ca9", reason = "Its debt asset (LBTC) quote reverts PriceOracle_TooStale (feed last updated ~204 days ago), so its borrowers can't be priced or liquidated." }, # eLBTC-3
 ]
