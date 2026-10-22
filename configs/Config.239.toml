@@ -23,4 +23,7 @@ enable_observability_api = true
 mode = "Blacklist"
 items = [
     "0xdd6eaef38f94d4724124cec14c819818714537ff", # Edge UltraYield Cluster - USDT
+    { address = "0x41068b2c61d535a370e39415e090ec2100b57934", reason = "Its debt asset's RedStone wstETH price feed reverts FeedNotSupported, so its borrowers can't be priced or liquidated." }, # ewstETH-1
+    { address = "0x994a7766a0e658098ca01a1adf114abd29e5629e", reason = "Its debt asset's RedStone cbBTC price feed reverts FeedNotSupported, so its borrowers can't be priced or liquidated." }, # ecbBTC-2
+    { address = "0x522e6437b80b11c10aafdb321c3610b85127e4cd", reason = "Its debt asset's RedStone LBTC price feed reverts FeedNotSupported, so its borrowers can't be priced or liquidated." }, # eLBTC-1
 ]

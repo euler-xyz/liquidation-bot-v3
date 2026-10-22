@@ -907,6 +907,7 @@ mod test {
         node_bindings::Anvil,
         primitives::{U256, address, bytes},
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
+        sol_types::SolError,
     };
     use tokio::sync::broadcast;
     use tracing_subscriber::EnvFilter;
@@ -1452,6 +1453,99 @@ mod test {
 
         // Check that they no longer have any debt.
         assert!(account.borrows.is_empty());
+    }
+
+    alloy::sol! {
+        error Swapper_SwapError(address target, bytes reason);
+    }
+
+    /// Wraps a swap provider and mines a block before quoting, mimicking the time that passes
+    /// between `checkLiquidation` and the simulation of the swap.
+    struct DelayedSwapProvider<'a, S: SwapQuoteProvider> {
+        provider: &'a alloy::providers::DynProvider,
+        inner: S,
+    }
+
+    impl<S: SwapQuoteProvider> SwapQuoteProvider for DelayedSwapProvider<'_, S> {
+        async fn find_swap(
+            &self,
+            liq: PreparedLiquidation,
+        ) -> Result<Option<PreparedLiquidation>, LiquidationReasoningError> {
+            self.provider.anvil_mine(Some(1), Some(12)).await.unwrap();
+            self.inner.find_swap(liq).await
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "depends on the live state of a mainnet account and the swap API"]
+    // The collateral (sUSP) is priced through a rate that accrues every block, so the collateral
+    // seized at execution is slightly less than what `checkLiquidation` reported. Swapping the
+    // full reported amount made the sUSP redeem revert with `ERC4626ExceededMaxRedeem`.
+    async fn liquidation_swap_tolerates_seized_collateral_drift() {
+        let violator = address!("0xcfe5660d6c55906ec8c488a466bd4f77f77eec8c");
+        let susp = address!("0x271C616157e69A43B4977412A64183Cf110Edf16");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
+        let vaults = &mut Vaults::new(config.vault_lens_address, config.utils_lens_address);
+
+        // Fork at the latest block, the swap API quotes against the current state.
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .arg("--disable-min-priority-fee")
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        let account = fetch_account(
+            provider.clone(),
+            &VaultFilter::default(),
+            vaults,
+            config.account_lens_address,
+            config.evc_address,
+            violator,
+        )
+        .await
+        .unwrap();
+
+        assert!(!account.borrows.is_empty());
+
+        let liquidation = prepare_liquidation(
+            &provider.clone(),
+            &DelayedSwapProvider {
+                provider: &provider,
+                inner: EulerSwapApi::new(
+                    config.swap_url.clone(),
+                    provider.clone().erased(),
+                    config.chain_id,
+                    config.liquidator_address,
+                    config.liquidator_address,
+                    config.swapper_address,
+                    config.wrapped_native_asset_address,
+                    "1", // Max slippage.
+                    EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
+                ),
+            },
+            None, // This liquidation does not use any pyth oracles.
+            config.liquidator_address,
+            account.clone(),
+        )
+        .await;
+
+        // The sUSP redeem must succeed. Anything failing after it (the DEX leg) is unrelated to
+        // the drift, so we only assert that the swapper did not fail while redeeming sUSP.
+        if let Err(LiquidationReasoningError::LiquidationRevert { data }) = &liquidation {
+            let err = Swapper_SwapError::abi_decode(data).unwrap();
+            assert_ne!(
+                err.target, susp,
+                "sUSP redeem reverted, reason: {}",
+                err.reason
+            );
+        }
     }
 
     /// Waits up to 30 seconds for a new block to be mined, polling once per second.

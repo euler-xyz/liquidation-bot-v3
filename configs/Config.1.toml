@@ -52,5 +52,7 @@ items = [
     { address = "0xc97af70ab043927a5d9b682e77d1af3c52559a4e", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eWETH-42
     { address = "0xc9d8768989ad7a202a808fb35c51bf5ed56055bd", reason = "Accepts Uniswap V4 position collateral, which the bot does not currently support." }, # eUSDe-12
     { address = "0x77633305032b6bdf3ebdb373b3badccb2786ce2f", reason = "Liquidate op is hooked by an access-control hook (0xF45Df77533F9a253A61Dd5D36531b12f78cd8301) with no liquidator or wildcard role holders, so every liquidation reverts NotAuthorized(). Dust-sized (~0.98 USD0 total borrows)." }, # eUSD0-6
+    { address = "0xa94f9ce821c7bd57cc12991cb46ca19f5789278f", reason = "Dust-sized (~0.42 USDC total borrows); its borrowers' only collateral (esUSP-3, Pareto sUSP) has its liquidation LTV ramped to 0. Every swap route covering the repay goes through a Balancer V3 USP/waUSDC pool that reverts BalanceNotSettled() at this size, and the profit (~0.05 USDC) would not cover gas." }, # eUSDC-50
+    { address = "0x84d14b0b5c78cf33c4f07af464ad1f38f4cfff34", reason = "Unlisted market governed by its own borrower; its non-canonical USDC (0x564fa4e3...) and deACRDX collateral are both priced through an adapter that reverts PriceOracle_InvalidAnswer. Dust-sized (~2 USDC total borrows)." }, # eUSDC-110
 ]
 

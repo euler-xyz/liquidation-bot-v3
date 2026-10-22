@@ -18,3 +18,10 @@ vault_shares_polling_interval_seconds = 60
 enable_observability_api = true
 
 # This chain does not have a Pyth deployment.
+
+[vault_filter]
+mode = "Blacklist"
+items = [
+    { address = "0xe1cecd3644fdcfab4c6206e693a5a4fa90e9c710", reason = "Its debt asset (USDC.e) quote reverts PriceOracle_TooStale (feed last updated ~440 days ago), so its borrowers can't be priced or liquidated." }, # eUSDC.e-1
+    { address = "0xced95f4cf51de12f0a0af62f1b53828491d21ca9", reason = "Its debt asset (LBTC) quote reverts PriceOracle_TooStale (feed last updated ~204 days ago), so its borrowers can't be priced or liquidated." }, # eLBTC-3
+]
