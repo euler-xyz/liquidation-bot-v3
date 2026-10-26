@@ -23,6 +23,7 @@ use crate::{
     dispatcher::DispatchConfig,
     lens::fetch_account,
     liquidation::{PreparedLiquidation, prepare_liquidation},
+    notifications::{NotificationTracker, Notifications, SlackWebhookNotifier, run_notifier},
     oracles::{OracleChange, OraclesCache, poll_oracle_types, poll_oracles},
     prices::EulerPricingApi,
     pyth::fetch_pyth_data,
@@ -46,6 +47,7 @@ mod config;
 mod dispatcher;
 mod lens;
 mod liquidation;
+mod notifications;
 mod oracles;
 mod prices;
 mod pyth;
@@ -305,6 +307,27 @@ async fn main() {
         });
     }
 
+    // Notify Slack about accounts that end up in an error state, if a webhook is configured.
+    let notifications = match config.slack_webhook_url.clone() {
+        Some(webhook_url) => {
+            let (sender, receiver) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(run_notifier(SlackWebhookNotifier::new(webhook_url), receiver));
+
+            Some(Notifications::new(
+                config.chain_id,
+                NotificationTracker::new(
+                    &config.notification_blacklist,
+                    tokio::time::Duration::from_secs(config.notification_cooldown_seconds),
+                ),
+                sender,
+            ))
+        }
+        None => {
+            info!("No `SLACK_WEBHOOK_URL` is configured, error notifications are disabled.");
+            None
+        }
+    };
+
     let swap_provider = EulerSwapApi::new(
         config.swap_url.clone(),
         provider.clone().erased(),
@@ -330,6 +353,7 @@ async fn main() {
         liquidation_sender,
         &swap_provider,
         Some(tx),
+        notifications,
     )
     .await;
 }
@@ -349,6 +373,7 @@ pub async fn run(
     liquidation_channel: broadcast::Sender<PreparedLiquidation>,
     swap_provider: &impl SwapQuoteProvider,
     state: Option<tokio::sync::watch::Sender<Heartbeat>>,
+    mut notifications: Option<Notifications>,
 ) {
     let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
         config.full_resync_and_check_interval_seconds,
@@ -399,6 +424,11 @@ pub async fn run(
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
                     info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
+                }
+
+                // Every account now has a fresh status.
+                if let Some(notifications) = notifications.as_mut() {
+                    notifications.on_full_resync(&accounts.all_accounts());
                 }
             }
             result = oracle_update_channel.recv() => {
@@ -463,6 +493,10 @@ pub async fn run(
 
                 if number_of_unhealthy != 0 || !liquidations.is_empty() {
                     info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
+                }
+
+                if let Some(notifications) = notifications.as_mut() {
+                    notifications.on_partial_update(&accounts_affected);
                 }
             },
             // Track when an event happens on chain involving an account that potentially updates

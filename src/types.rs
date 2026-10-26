@@ -262,6 +262,14 @@ impl Account {
         }
     }
 
+    /// The current status of the account, `Unknown` if the status can not be read.
+    pub fn status(&self) -> LiquidationReasoning {
+        self.status
+            .read()
+            .map(|s| s.status.clone())
+            .unwrap_or(LiquidationReasoning::Unknown)
+    }
+
     /// True if this account is marked as blacklisted. Blacklisted accounts stay tracked and
     /// visible via the observability API, but must never be considered for liquidation.
     pub fn is_blacklisted(&self) -> bool {

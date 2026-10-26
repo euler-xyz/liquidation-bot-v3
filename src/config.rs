@@ -183,6 +183,26 @@ pub struct Config {
     // Observability settings
     #[serde(default)]
     pub enable_observability_api: bool,
+
+    // The Slack incoming webhook that error notifications are sent to. Populated from the
+    // `SLACK_WEBHOOK_URL` environment variable, notifications are disabled when it is unset.
+    #[serde(default)]
+    pub slack_webhook_url: Option<Url>,
+
+    // Vaults that generate false positive error notifications. Accounts with a borrow or
+    // collateral position in one of these are never notified about, but unlike the
+    // `vault_filter` blacklist they are still liquidated.
+    #[serde(default)]
+    pub notification_blacklist: Vec<VaultFilterItem>,
+
+    // After notifying about an account, how long before we notify about it again (and only if
+    // it recovered in between). Defaults to a day.
+    #[serde(default = "default_notification_cooldown_seconds")]
+    pub notification_cooldown_seconds: u64,
+}
+
+fn default_notification_cooldown_seconds() -> u64 {
+    86400
 }
 
 fn default_vault_shares_polling_interval_seconds() -> u64 {
@@ -475,6 +495,17 @@ mod test {
                 item.address()
             );
         }
+    }
+
+    #[test]
+    /// The notification settings are optional, config files without them keep loading.
+    fn notification_settings_default_when_absent() {
+        let config = load_configuration_file_for_test("https://example.com", 1)
+            .expect("Could not load the chain id 1 config");
+
+        assert!(config.slack_webhook_url.is_none());
+        assert!(config.notification_blacklist.is_empty());
+        assert_eq!(config.notification_cooldown_seconds, 86400);
     }
 
     #[tokio::test]
