@@ -36,6 +36,12 @@ Ready-made config files for every supported chain are checked into the `configs/
 | `EOA_ADDRESS` | Public address of the wallet that will sign liquidation transactions. Validated against `EOA_PRIVATE_KEY` on startup. |
 | `EOA_PRIVATE_KEY` | Private key for the signing wallet. |
 
+### Optional environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `SLACK_WEBHOOK_URL` | Slack incoming webhook that error notifications are posted to. Notifications are disabled when unset. |
+
 ### Configuration file fields
 
 The TOML files in `configs/` define everything that is chain-specific. The following fields are recognised:
@@ -64,6 +70,17 @@ The TOML files in `configs/` define everything that is chain-specific. The follo
 - `vault_filter` (table, optional): Restricts which vaults the bot will track and liquidate against.
   - `mode`: One of `"None"` (track everything, the default), `"Whitelist"` (track only the vaults in `items`), or `"Blacklist"` (track everything except the vaults in `items`).
   - `items`: List of vault addresses the filter applies to.
+- `notification_blacklist` (list, default empty): Vaults that generate false positive error notifications. Accounts with a borrow or collateral position in one of them are never notified about, but are still liquidated. Takes the same entries as `vault_filter.items`.
+- `notification_cooldown_seconds` (u64, default `86400`): The minimum time before an account is notified about again.
+
+### Error notifications
+
+When `SLACK_WEBHOOK_URL` is set, the bot posts to Slack when an account enters an `OracleError`, `LiquidationRevert` or `Other` error state (a lens error is judged by the state it wraps). To avoid spam:
+
+- An account is reported once. It is only reported again after it was seen in a non-error state (healthy, unprofitable or no swap path) and the cooldown has passed.
+- All accounts found in a single check are sent as one message.
+- Accounts already in an error state when the bot starts are not reported, until they recover and break again.
+- Accounts blacklisted through `vault_filter`, or with a position in a `notification_blacklist` vault, are never reported.
 
 On startup the bot validates the configuration before starting work. It checks that the RPC reports the expected chain id, that the signing key matches the configured EOA address, and that every configured contract address actually has bytecode deployed at it. If any of these fail the bot exits.
 
