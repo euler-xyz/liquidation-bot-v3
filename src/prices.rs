@@ -49,6 +49,12 @@ pub trait PriceAsset {
     ) -> Result<U256, PricingError>;
 }
 
+pub trait UsdValue {
+    #![allow(async_fn_in_trait)]
+    /// The value of `amount` of `asset` in USD.
+    async fn usd_value(&self, asset: Address, amount: U256) -> Result<f64, PricingError>;
+}
+
 pub struct EulerPricingApi {
     base_url: Url,
     chain_id: u64,
@@ -201,6 +207,16 @@ impl PriceAsset for EulerPricingApi {
             get_euler_price(&self.client, &self.base_url, self.chain_id, output_asset).await?;
 
         convert(input_amount, &input_usd, &output_usd)
+    }
+}
+
+impl UsdValue for EulerPricingApi {
+    async fn usd_value(&self, asset: Address, amount: U256) -> Result<f64, PricingError> {
+        let price = get_euler_price(&self.client, &self.base_url, self.chain_id, asset).await?;
+
+        // Only used for rough thresholds, so the precision of a float is plenty.
+        let amount: f64 = amount.into();
+        Ok(amount / 10f64.powi(price.decimals as i32) * price.price_usd)
     }
 }
 

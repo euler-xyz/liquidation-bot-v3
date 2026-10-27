@@ -19,6 +19,13 @@ full_resync_and_check_interval_seconds = 3600
 vault_shares_polling_interval_seconds = 60
 enable_observability_api = true
 
+# Vaults that produce false positive error notifications, see `notification_blacklist` in the README.
+notification_blacklist = [
+    { address = "0xa3e0943d0196F76db58d3549C9a7528Ef4ac335F", reason = "esUSP-3: sUSP (Pareto staked USP) has no instant redemption (maxRedeem is 0 for the swapper, ERC4626ExceededMaxRedeem) and every swap route redeems it, so liquidations seizing it always revert." },
+    { address = "0x4f36Bebf5dDb4b804F9C72644aEe82BAd165BFfc", reason = "ehwHLP-1: hwHLP sells below its oracle value, swap quotes never cover the repayment so liquidations revert on repay (E_TransferFromFailed)." },
+    { address = "0xb53b4B2590457bE63E1DCdAffa6a18ECd44D96D2", reason = "ePT-USDe-25SEP2025-1: expired PT collateral, the swap API returns no quotes for it." },
+]
+
 [pyth]
 address = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6"
 endpoint = "https://hermes.pyth.network/"

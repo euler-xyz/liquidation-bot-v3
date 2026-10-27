@@ -9,17 +9,22 @@ use std::{
     fmt,
 };
 
-use alloy::primitives::{Address, Bytes};
+use alloy::{
+    primitives::{Address, U256},
+    sol,
+    sol_types::{Revert, SolError, decode_revert_reason},
+};
 use anyhow::Result;
 use backon::{ExponentialBuilder, Retryable};
 use chrono::{DateTime, TimeDelta, Utc};
 use itertools::Itertools;
 use reqwest::Url;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     config::VaultFilterItem,
+    prices::UsdValue,
     types::{Account, LiquidationReasoning, LiquidationReasoningError},
 };
 
@@ -106,9 +111,62 @@ fn truncate(message: &str) -> String {
     }
 }
 
-fn format_revert_data(data: &Bytes) -> String {
+sol! {
+    // Raised by the swapper when a call to a swap provider reverts, wrapping its revert data.
+    error Swapper_SwapError(address swapProvider, bytes rawError);
+    // Raised by an EVault when pulling assets fails, wrapping the revert data of both attempts.
+    error E_TransferFromFailed(bytes errorPermit2, bytes errorTransferFrom);
+}
+
+/// Names of errors we have seen in practice, for which only the name is of interest.
+const KNOWN_ERRORS: &[(&str, [u8; 4])] = &[
+    ("ERC4626ExceededMaxRedeem", [0xb9, 0x4a, 0xbe, 0xec]),
+    ("PriceOracle_TooStale", [0xa6, 0xe6, 0x8d, 0x63]),
+];
+
+/// Decodes revert data into something readable, unwrapping the errors that wrap the revert data
+/// of an inner call, as the inner revert holds the actual reason.
+fn format_revert_data(data: &[u8]) -> String {
+    format_revert_data_at_depth(data, 0)
+}
+
+fn format_revert_data_at_depth(data: &[u8], depth: usize) -> String {
     if data.is_empty() {
         return "empty revert data".to_string();
+    }
+
+    // Guard against (maliciously) deeply nested revert data.
+    if depth < 4 {
+        if let Ok(error) = Swapper_SwapError::abi_decode(data) {
+            return format!(
+                "swap via {} failed: {}",
+                error.swapProvider,
+                format_revert_data_at_depth(&error.rawError, depth + 1)
+            );
+        }
+
+        if let Ok(error) = E_TransferFromFailed::abi_decode(data) {
+            return format!(
+                "E_TransferFromFailed: {}",
+                format_revert_data_at_depth(&error.errorTransferFrom, depth + 1)
+            );
+        }
+    }
+
+    if let Ok(revert) = Revert::abi_decode(data) {
+        return truncate(&revert.reason);
+    }
+
+    // Mostly `Panic(uint256)`, `Error(string)` was already handled above.
+    if let Some(reason) = decode_revert_reason(data) {
+        return truncate(&reason);
+    }
+
+    if let Some((name, _)) = KNOWN_ERRORS
+        .iter()
+        .find(|(_, selector)| data.starts_with(selector))
+    {
+        return name.to_string();
     }
 
     let shown = alloy::hex::encode_prefixed(&data[..data.len().min(MAX_REVERT_BYTES)]);
@@ -127,6 +185,8 @@ pub struct AccountAlert {
     pub detail: String,
     pub borrow_vaults: Vec<Address>,
     pub collateral_vaults: Vec<Address>,
+    // The asset and amount of the debt, used to skip notifying about dust positions.
+    pub debt: Option<(Address, U256)>,
 }
 
 /// All alerts of a single sweep, delivered as one message.
@@ -302,6 +362,7 @@ impl NotificationTracker {
                                 .iter()
                                 .map(|c| c.vault.erc4626().address)
                                 .collect(),
+                            debt: account.borrows.first().map(|b| (b.vault.asset, b.amount)),
                         });
                     }
                 }
@@ -451,12 +512,56 @@ impl Notifier for SlackWebhookNotifier {
     }
 }
 
+/// If the debt of the account is worth less than `min_debt_usd`. Such positions are too small to
+/// liquidate profitably, and swap quotes for them are unreliable, so their errors are noise. If
+/// the debt can not be priced we can not tell, so it is not considered dust.
+async fn is_dust(pricing: &impl UsdValue, alert: &AccountAlert, min_debt_usd: f64) -> bool {
+    let Some((asset, amount)) = alert.debt else {
+        return false;
+    };
+
+    match pricing.usd_value(asset, amount).await {
+        Ok(value) => {
+            if value < min_debt_usd {
+                debug!(
+                    account =? alert.account,
+                    "Not notifying about an account with ${value:.2} of debt, it is below the ${min_debt_usd} minimum"
+                );
+            }
+            value < min_debt_usd
+        }
+        Err(e) => {
+            warn!(
+                account =? alert.account,
+                "Could not price the debt of an account, notifying about it regardless. err: {}", e
+            );
+            false
+        }
+    }
+}
+
 /// Delivers every batch that is received until the channel closes.
 pub async fn run_notifier(
     notifier: impl Notifier,
+    pricing: impl UsdValue,
+    min_debt_usd: f64,
     mut receiver: mpsc::Receiver<NotificationBatch>,
 ) {
-    while let Some(batch) = receiver.recv().await {
+    while let Some(mut batch) = receiver.recv().await {
+        // Pricing is done here rather than when deciding what to report, so the API calls never
+        // stall the main loop.
+        let mut alerts = Vec::with_capacity(batch.alerts.len());
+        for alert in batch.alerts {
+            if !is_dust(&pricing, &alert, min_debt_usd).await {
+                alerts.push(alert);
+            }
+        }
+        batch.alerts = alerts;
+
+        if batch.alerts.is_empty() {
+            continue;
+        }
+
         if let Err(e) = notifier.send(&batch).await {
             error!(
                 "Could not deliver a notification about {} account(s), err: {:?}",
@@ -475,16 +580,21 @@ mod test {
         time::Duration,
     };
 
-    use alloy::primitives::{Address, Bytes, bytes};
-    use anyhow::Result;
+    use alloy::{
+        primitives::{Address, Bytes, U256, address, bytes},
+        sol_types::{Revert, SolError},
+    };
+    use anyhow::{Result, anyhow};
     use axum::{Json, Router, http::StatusCode, routing::post};
     use chrono::{TimeDelta, Utc};
     use tokio::sync::mpsc;
 
     use super::{
-        AccountAlert, ErrorKind, MAX_LISTED_ALERTS, NotificationBatch, NotificationTracker,
-        Notifications, Notifier, SlackWebhookNotifier, run_notifier,
+        AccountAlert, E_TransferFromFailed, ErrorKind, MAX_LISTED_ALERTS, NotificationBatch,
+        NotificationTracker, Notifications, Notifier, SlackWebhookNotifier, Swapper_SwapError,
+        format_revert_data, run_notifier,
     };
+    use crate::prices::{PricingError, UsdValue};
     use crate::types::{
         Account, LensError, LiquidationReasoning, LiquidationReasoningError, VaultBorrowPosition,
         VaultCollateralPosition,
@@ -501,6 +611,21 @@ mod test {
         async fn send(&self, batch: &NotificationBatch) -> Result<()> {
             self.batches.lock().unwrap().push(batch.clone());
             Ok(())
+        }
+    }
+
+    // Debt in this asset can not be priced.
+    const UNPRICED: Address = address!("0x00000000000000000000000000000000000000ff");
+
+    /// Treats every debt amount as its USD value, except for debt in `UNPRICED`.
+    struct StubPricing;
+
+    impl UsdValue for StubPricing {
+        async fn usd_value(&self, asset: Address, amount: U256) -> Result<f64, PricingError> {
+            if asset == UNPRICED {
+                return Err(PricingError::Other(anyhow!("no price")));
+            }
+            Ok(amount.into())
         }
     }
 
@@ -799,6 +924,7 @@ mod test {
                 detail: "<!channel> & co".to_string(),
                 borrow_vaults: vec![],
                 collateral_vaults: vec![],
+                debt: None,
             }],
         };
 
@@ -807,11 +933,115 @@ mod test {
         assert!(!text.contains("<!channel>"));
     }
 
+    fn revert(reason: &str) -> Bytes {
+        Revert::from(reason).abi_encode().into()
+    }
+
+    #[test]
+    fn revert_data_is_decoded_down_to_the_inner_reason() {
+        let provider = Address::repeat_byte(0x11);
+
+        // As seen for sUSDS collateral.
+        let swap_error = Swapper_SwapError {
+            swapProvider: provider,
+            rawError: revert("SUsds/insufficient-balance"),
+        }
+        .abi_encode();
+        assert_eq!(
+            format_revert_data(&swap_error),
+            format!("swap via {provider} failed: SUsds/insufficient-balance")
+        );
+
+        // As seen when a swap does not cover the repayment.
+        let transfer_error = E_TransferFromFailed {
+            errorPermit2: Bytes::new(),
+            errorTransferFrom: revert("ERC20: transfer amount exceeds balance"),
+        }
+        .abi_encode();
+        assert_eq!(
+            format_revert_data(&transfer_error),
+            "E_TransferFromFailed: ERC20: transfer amount exceeds balance"
+        );
+
+        // As seen for sUSP collateral, a known error nested in a swap error.
+        let max_redeem = Swapper_SwapError {
+            swapProvider: provider,
+            rawError: bytes!(
+                "0xb94abeec000000000000000000000000719f8b330cca71cb6195d032a43194c7d3f9fb45"
+            ),
+        }
+        .abi_encode();
+        assert_eq!(
+            format_revert_data(&max_redeem),
+            format!("swap via {provider} failed: ERC4626ExceededMaxRedeem")
+        );
+
+        // Anything else falls back to the (truncated) raw data.
+        assert_eq!(
+            format_revert_data(&bytes!("0xdeadbeef")),
+            "revert data 0xdeadbeef"
+        );
+        assert_eq!(format_revert_data(&[]), "empty revert data");
+    }
+
+    fn alert_with_debt(debt: Option<(Address, U256)>) -> AccountAlert {
+        AccountAlert {
+            account: Address::random(),
+            kind: ErrorKind::LiquidationRevert,
+            detail: "detail".to_string(),
+            borrow_vaults: vec![Address::random()],
+            collateral_vaults: vec![],
+            debt,
+        }
+    }
+
+    #[tokio::test]
+    async fn dust_debt_is_not_notified_about() {
+        let notifier = RecordingNotifier::default();
+        let (sender, receiver) = mpsc::channel(16);
+        let task = tokio::spawn(run_notifier(notifier.clone(), StubPricing, 100.0, receiver));
+
+        let priced = Address::random();
+        let large = alert_with_debt(Some((priced, U256::from(500))));
+        let unpriced = alert_with_debt(Some((UNPRICED, U256::from(1))));
+        let unknown_debt = alert_with_debt(None);
+
+        // Only dust, nothing is sent.
+        sender
+            .send(NotificationBatch {
+                chain_id: 1,
+                alerts: vec![alert_with_debt(Some((priced, U256::from(5))))],
+            })
+            .await
+            .unwrap();
+
+        // Dust is dropped from a batch, anything we can not price is kept.
+        sender
+            .send(NotificationBatch {
+                chain_id: 1,
+                alerts: vec![
+                    alert_with_debt(Some((priced, U256::from(99)))),
+                    large.clone(),
+                    unpriced.clone(),
+                    unknown_debt.clone(),
+                ],
+            })
+            .await
+            .unwrap();
+
+        drop(sender);
+        task.await.unwrap();
+
+        let batches = notifier.batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].alerts, vec![large, unpriced, unknown_debt]);
+    }
+
     #[tokio::test]
     async fn notifications_are_delivered_after_the_baseline() {
         let notifier = RecordingNotifier::default();
         let (sender, receiver) = mpsc::channel(16);
-        let task = tokio::spawn(run_notifier(notifier.clone(), receiver));
+        let task = tokio::spawn(run_notifier(notifier.clone(), StubPricing, 0.0, receiver));
 
         let mut notifications = Notifications::new(1, tracker(), sender);
         let existing = account_with_status(oracle_error());
@@ -864,6 +1094,7 @@ mod test {
                 detail: "oracle error".to_string(),
                 borrow_vaults: vec![Address::ZERO],
                 collateral_vaults: vec![],
+                debt: None,
             }],
         }
     }
