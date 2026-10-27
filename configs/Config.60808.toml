@@ -18,3 +18,10 @@ vault_shares_polling_interval_seconds = 60
 enable_observability_api = true
 
 # This chain does not have a Pyth deployment.
+
+[vault_filter]
+mode = "Blacklist"
+items = [
+    { address = "0xced95f4cF51dE12F0a0af62F1b53828491d21Ca9", reason = "eLBTC-3: every price through its router reverts PriceOracle_TooStale (Chainlink feed ~210 days old, 2 hour max staleness), so no position can be valued or liquidated." },
+    { address = "0xE1cEcd3644fdCfab4C6206E693A5a4Fa90e9c710", reason = "eUSDC.e-1: the USDC.e price through its router reverts PriceOracle_TooStale (Chainlink feed ~447 days old, 1 year max staleness), so no position can be valued or liquidated." },
+]

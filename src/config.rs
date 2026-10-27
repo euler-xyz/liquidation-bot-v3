@@ -199,10 +199,19 @@ pub struct Config {
     // it recovered in between). Defaults to a day.
     #[serde(default = "default_notification_cooldown_seconds")]
     pub notification_cooldown_seconds: u64,
+
+    // Accounts with less debt than this (in USD) are not notified about, as dust positions are
+    // not worth liquidating and their swap quotes are unreliable.
+    #[serde(default = "default_notification_min_debt_usd")]
+    pub notification_min_debt_usd: f64,
 }
 
 fn default_notification_cooldown_seconds() -> u64 {
     86400
+}
+
+fn default_notification_min_debt_usd() -> f64 {
+    100.0
 }
 
 fn default_vault_shares_polling_interval_seconds() -> u64 {
@@ -500,12 +509,14 @@ mod test {
     #[test]
     /// The notification settings are optional, config files without them keep loading.
     fn notification_settings_default_when_absent() {
-        let config = load_configuration_file_for_test("https://example.com", 1)
-            .expect("Could not load the chain id 1 config");
+        // A chain that does not configure any of the notification settings.
+        let config = load_configuration_file_for_test("https://example.com", 8453)
+            .expect("Could not load the chain id 8453 config");
 
         assert!(config.slack_webhook_url.is_none());
         assert!(config.notification_blacklist.is_empty());
         assert_eq!(config.notification_cooldown_seconds, 86400);
+        assert_eq!(config.notification_min_debt_usd, 100.0);
     }
 
     #[tokio::test]

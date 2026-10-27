@@ -311,7 +311,12 @@ async fn main() {
     let notifications = match config.slack_webhook_url.clone() {
         Some(webhook_url) => {
             let (sender, receiver) = tokio::sync::mpsc::channel(16);
-            tokio::spawn(run_notifier(SlackWebhookNotifier::new(webhook_url), receiver));
+            tokio::spawn(run_notifier(
+                SlackWebhookNotifier::new(webhook_url),
+                EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
+                config.notification_min_debt_usd,
+                receiver,
+            ));
 
             Some(Notifications::new(
                 config.chain_id,

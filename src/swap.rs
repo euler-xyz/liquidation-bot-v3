@@ -155,6 +155,23 @@ fn same_asset_profit(seized_collateral: U256, repay_amount: U256) -> Option<U256
     Some(seized_collateral - repay_amount)
 }
 
+/// The share of the seized collateral (in basis points) that is held back from the swap.
+const SWAP_INPUT_BUFFER_BPS: u64 = 1;
+
+/// The amount of seized collateral to request a swap quote for.
+///
+/// The seized amount is calculated before the liquidation executes. Collateral that appreciates
+/// over time (e.g. sUSDS) is worth more per unit by then, so the liquidation seizes slightly
+/// less of it than calculated. Swapping the full calculated amount would then overspend and
+/// revert, so a small buffer (at least 1 wei) is held back.
+fn swap_input_amount(seized_collateral: U256) -> U256 {
+    let buffer = seized_collateral
+        .saturating_mul(U256::from(SWAP_INPUT_BUFFER_BPS))
+        .div_ceil(U256::from(10_000));
+
+    seized_collateral.saturating_sub(buffer)
+}
+
 pub trait SwapQuoteProvider {
     #![allow(async_fn_in_trait)]
     async fn find_swap(
@@ -374,7 +391,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             origin: self.liquidator_eoa,
             account_in: Address::ZERO,
             account_out: self.swapper_address,
-            amount: liq.seized_collateral_amount(),
+            amount: swap_input_amount(liq.seized_collateral_amount()),
             target_debt: U256::ZERO,
             current_debt: liq.repay_amount(),
             swapper_mode: "0".to_string(),
@@ -421,10 +438,16 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             // Build the liquidation.
             let liquidation = liq.clone().with_swap_data(Some(quote.swap));
 
-            // Simulate executing it.
+            // Simulate executing it, from the EOA that will send it as some swap routes depend on
+            // the sender.
             match self
                 .provider
-                .call(liquidation.clone().into_transaction(self.profit_receiver))
+                .call(
+                    liquidation
+                        .clone()
+                        .into_transaction(self.profit_receiver)
+                        .from(self.liquidator_eoa),
+                )
                 .await
             {
                 Ok(_) => {
@@ -515,7 +538,10 @@ mod test {
     };
     use anyhow::Result;
 
-    use super::{EulerSwapApi, SwapApiResponse, SwapQuote, SwapQuoteProvider, same_asset_profit};
+    use super::{
+        EulerSwapApi, SwapApiResponse, SwapQuote, SwapQuoteProvider, same_asset_profit,
+        swap_input_amount,
+    };
     use crate::{
         liquidation::{ExpectedProfit, PreparedLiquidation},
         prices::{PriceAsset, PricingError},
@@ -547,6 +573,18 @@ mod test {
     #[test]
     fn same_asset_profit_shortfall_is_none() {
         assert_eq!(same_asset_profit(U256::from(99), U256::from(100)), None);
+    }
+
+    #[test]
+    fn swap_input_amount_holds_back_a_buffer() {
+        // One basis point.
+        assert_eq!(
+            swap_input_amount(U256::from(1_000_000)),
+            U256::from(999_900)
+        );
+        // At least one wei, even when the basis point rounds to zero.
+        assert_eq!(swap_input_amount(U256::from(3)), U256::from(2));
+        assert_eq!(swap_input_amount(U256::ZERO), U256::ZERO);
     }
 
     // ── find_swap: same-asset branch ────────────────────────────────────────

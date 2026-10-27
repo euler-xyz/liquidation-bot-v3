@@ -17,6 +17,11 @@ full_resync_and_check_interval_seconds = 3600
 vault_shares_polling_interval_seconds = 60
 enable_observability_api = true
 
+# Vaults that produce false positive error notifications, see `notification_blacklist` in the README.
+notification_blacklist = [
+    { address = "0x3135551ce7945c03C18df7985E089DDBC763cEE8", reason = "eUSR-2: Resolv USR is priced at par but sells below it, swap proceeds never cover the USDC repayment so liquidations revert on repay (E_TransferFromFailed)." },
+]
+
 [pyth]
 address = "0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594"
 endpoint = "https://hermes.pyth.network/"

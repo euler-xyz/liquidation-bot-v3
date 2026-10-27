@@ -72,6 +72,7 @@ The TOML files in `configs/` define everything that is chain-specific. The follo
   - `items`: List of vault addresses the filter applies to.
 - `notification_blacklist` (list, default empty): Vaults that generate false positive error notifications. Accounts with a borrow or collateral position in one of them are never notified about, but are still liquidated. Takes the same entries as `vault_filter.items`.
 - `notification_cooldown_seconds` (u64, default `86400`): The minimum time before an account is notified about again.
+- `notification_min_debt_usd` (f64, default `100`): Accounts with less debt than this (in USD, priced through the pricing API) are not notified about. If the debt can not be priced the account is notified about regardless.
 
 ### Error notifications
 
@@ -79,6 +80,7 @@ When `SLACK_WEBHOOK_URL` is set, the bot posts to Slack when an account enters a
 
 - An account is reported once. It is only reported again after it was seen in a non-error state (healthy, unprofitable or no swap path) and the cooldown has passed.
 - All accounts found in a single check are sent as one message.
+- Dust positions, with less debt than `notification_min_debt_usd`, are not reported. They are not worth liquidating and their swap quotes are unreliable, so their errors are noise.
 - Accounts already in an error state when the bot starts are not reported, until they recover and break again.
 - Accounts blacklisted through `vault_filter`, or with a position in a `notification_blacklist` vault, are never reported.
 
