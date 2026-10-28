@@ -19,6 +19,11 @@ enable_observability_api = true
 
 # This chain does not have a Pyth deployment.
 
+# Vaults that produce false positive error notifications, see `notification_blacklist` in the README.
+notification_blacklist = [
+    { address = "0xc282E68852F52A9cf493b8A85dfF55B871f4757B", reason = "eHybridBTC.pendle-6: the HybridBTC.pendle price reverts PriceOracle_TooStale (Chainlink feed ~211 days old, 2 hour max staleness), so the collateral can not be valued." },
+]
+
 [vault_filter]
 mode = "Blacklist"
 items = [
