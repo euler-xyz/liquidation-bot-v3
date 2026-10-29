@@ -24,6 +24,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     config::VaultFilterItem,
+    http,
     prices::UsdValue,
     types::{Account, LiquidationReasoning, LiquidationReasoningError},
 };
@@ -482,7 +483,7 @@ pub struct SlackWebhookNotifier {
 impl SlackWebhookNotifier {
     pub fn new(webhook_url: Url) -> Self {
         SlackWebhookNotifier {
-            client: reqwest::Client::new(),
+            client: http::client(),
             webhook_url,
             retry: ExponentialBuilder::default().with_max_times(3),
         }

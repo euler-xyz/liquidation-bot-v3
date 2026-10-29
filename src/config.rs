@@ -1,4 +1,4 @@
-use crate::liquidation::Liquidator;
+use crate::{http, liquidation::Liquidator};
 use alloy::{
     primitives::Address,
     providers::{Provider, ProviderBuilder},
@@ -251,7 +251,7 @@ impl Config {
     /// Attempts to ensure the config is valid
     pub async fn validate_config(&self) -> Result<()> {
         // Build the provider.
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.clone());
+        let provider = ProviderBuilder::new().connect_reqwest(http::rpc_client(), self.rpc_url.clone());
 
         // Get the chain id, this both ensures the RPC url is valid and we check that its the
         // correct RPC for this config.
@@ -266,13 +266,14 @@ impl Config {
 
         // Make sure the transaction RPC if set, is also valid and that its for the correct chain.
         if let Some(transaction_rpc_url) = self.transaction_rpc_url.clone() {
-            let transaction_provider = ProviderBuilder::new().connect_http(transaction_rpc_url);
+            let transaction_provider =
+                ProviderBuilder::new().connect_reqwest(http::rpc_client(), transaction_rpc_url);
             let transaction_provider_chain_id = transaction_provider.get_chain_id().await?;
 
             if transaction_provider_chain_id != chain_id {
                 anyhow::bail!(
                     "The configured Transaction RPC reports a chain_id ({}) that is not the same as the chain_id in the configuration file ({})",
-                    chain_id,
+                    transaction_provider_chain_id,
                     self.chain_id
                 );
             }
@@ -327,7 +328,7 @@ impl Config {
                 "On chain {} the evc address configured for the liquidator is different than the one that is configured for the bot, this is a misconfiguration. contract={}, bot={}",
                 self.chain_id,
                 liquidator_evc,
-                self.swapper_address
+                self.evc_address
             );
         }
 

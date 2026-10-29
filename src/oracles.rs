@@ -10,6 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
 use futures::{StreamExt, stream};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::TimestampSeconds;
 use serde_with::serde_as;
@@ -29,6 +30,9 @@ pub const ORACLE_PRICING_UNIT: i64 = 1000000000000000000;
 
 /// How many oracles we re-resolve concurrently during a [`OraclesCache::refresh_all_types`] pass.
 const TYPE_REFRESH_CONCURRENCY: usize = 16;
+
+/// How many prices we fetch concurrently in [`OraclesCache::ensure_prices_for`].
+const PRICE_FETCH_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct OraclesCache {
@@ -60,20 +64,25 @@ impl OraclesCache {
 
     /// Ensures that we have a price for all of the oracles, as long as they are reporting a price.
     pub async fn ensure_prices_for(&self, provider: &DynProvider, ids: Vec<OracleIdentifier>) {
-        // Filter out the ones where we already have a price.
-        let new_ids: Vec<OracleIdentifier> = ids
-            .iter()
-            .filter(|id| self.active_oracles.insert((*id).clone()))
-            .cloned()
+        // Filter out the ones where we already have a price. NOTE: An oracle being active is not
+        // enough, `get_quote` marks oracles active without fetching a price for them, that only
+        // happens on the next polling pass.
+        let missing: Vec<OracleIdentifier> = ids
+            .into_iter()
+            .unique()
+            .filter(|id| !self.prices.contains_key(id))
             .collect();
 
-        // For these new ids we fetch their types and prices.
-        for id in new_ids.iter() {
-            let result = self.fetch_latest_price(provider, id.clone()).await;
-            if let Err(err) = result {
-                tracing::warn!("Could not fetch price for {:?}, err: {:?}", id, err);
-            }
-        }
+        // For these ids we fetch their types and prices, this also marks them as active.
+        stream::iter(missing)
+            .map(|id| async move {
+                if let Err(err) = self.fetch_latest_price(provider, id.clone()).await {
+                    tracing::warn!("Could not fetch price for {:?}, err: {:?}", id, err);
+                }
+            })
+            .buffer_unordered(PRICE_FETCH_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
     }
 
     pub async fn fetch_type(&self, provider: &DynProvider, id: OracleIdentifier) -> Result<Oracle> {

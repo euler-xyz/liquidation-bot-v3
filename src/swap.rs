@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    http,
     liquidation::{ExpectedProfit, PreparedLiquidation},
     prices::{PriceAsset, PricingError},
     types::LiquidationReasoningError,
@@ -195,6 +196,8 @@ pub struct EulerSwapApi<T: PriceAsset> {
 
     // This is used to perform pricing conversions.
     pricing: T,
+
+    client: Client,
 }
 
 impl<T: PriceAsset> EulerSwapApi<T> {
@@ -219,6 +222,11 @@ impl<T: PriceAsset> EulerSwapApi<T> {
             wrapped_native_asset,
             max_slippage: max_slippage.to_string(),
             pricing,
+            // NOTICE: temp work around as without a regular user agent our requests get blocked
+            // by cloudflare.
+            client: http::build(http::client_builder().user_agent(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:149.0) Gecko/20100101 Firefox/149.0",
+            )),
         }
     }
 
@@ -260,14 +268,6 @@ impl<T: PriceAsset> EulerSwapApi<T> {
             query.push(("provider", v.clone()));
         }
 
-        // NOTICE: temp work around as without a regular user agent our requests get blocked by
-        // cloudflare.
-        let client = Client::builder()
-        .user_agent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:149.0) Gecko/20100101 Firefox/149.0",
-        )
-        .build()?;
-
         let url =
             reqwest::Url::parse_with_params(format!("{}swaps", self.base_url).as_str(), &query)?;
 
@@ -277,7 +277,8 @@ impl<T: PriceAsset> EulerSwapApi<T> {
         // cloudflare.
         let api_key = std::env::var("SWAP_API_HEADER_SECRET").unwrap_or_default();
 
-        let response_body = client
+        let response_body = self
+            .client
             .get(url.clone())
             .header("x-api-key", api_key)
             .send()

@@ -1,10 +1,13 @@
 use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
-use reqwest::{Client, Url};
+use reqwest::Url;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
 use tokio::time::Instant;
+
+use crate::http;
 
 /// Errors that can occur while quoting through the pricing API.
 ///
@@ -59,6 +62,9 @@ pub struct EulerPricingApi {
     base_url: Url,
     chain_id: u64,
     client: ClientWithMiddleware,
+    // The directory the response cache lives in. Held so it is only removed (on drop) once the
+    // client that writes to it is gone.
+    _cache_dir: Option<TempDir>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,16 +155,18 @@ async fn get_euler_price(
 impl EulerPricingApi {
     pub fn new(base_url: Url, chain_id: u64) -> Self {
         // Attempt to create a tempdir so we can use it for caching requests.
-        let client = match tempfile::tempdir() {
+        let (client, cache_dir) = match tempfile::tempdir() {
             Ok(cache_dir) => {
                 let cache_manager = CACacheManager::new(cache_dir.path().to_path_buf(), true);
-                ClientBuilder::new(Client::new())
+                let client = ClientBuilder::new(http::client())
                     .with(Cache(HttpCache {
                         mode: CacheMode::Default,
                         manager: cache_manager,
                         options: HttpCacheOptions::default(),
                     }))
-                    .build()
+                    .build();
+
+                (client, Some(cache_dir))
             }
             Err(e) => {
                 tracing::warn!(
@@ -166,7 +174,7 @@ impl EulerPricingApi {
                     e
                 );
                 // Still continue, but without the caching layer.
-                ClientBuilder::new(Client::new()).build()
+                (ClientBuilder::new(http::client()).build(), None)
             }
         };
 
@@ -175,6 +183,7 @@ impl EulerPricingApi {
             base_url,
             chain_id,
             client,
+            _cache_dir: cache_dir,
         }
     }
 }
@@ -270,6 +279,24 @@ mod test {
             confidence: None,
             timestamp: String::new(),
         }
+    }
+
+    #[test]
+    fn cache_dir_lives_as_long_as_the_api() {
+        let api = EulerPricingApi::new("https://v3.euler.finance".parse().unwrap(), 1);
+        let cache_dir = api
+            ._cache_dir
+            .as_ref()
+            .expect("expected a cache dir")
+            .path()
+            .to_path_buf();
+
+        // The cache writes into this directory, it must exist for as long as the api does...
+        assert!(cache_dir.exists());
+
+        // ...and be cleaned up once it is gone.
+        drop(api);
+        assert!(!cache_dir.exists());
     }
 
     #[test]

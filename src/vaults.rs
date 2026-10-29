@@ -7,7 +7,7 @@ use alloy::{
     providers::DynProvider,
     sol,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use futures::{StreamExt, stream};
 use std::{collections::HashMap, sync::Arc};
@@ -110,18 +110,25 @@ impl Vaults {
             return Ok(vault.clone());
         }
 
-        // Attempt to fetch it as an EVault first. If the lens calls fail we assume the
-        // address is not an EVault but a plain ERC4626 vault.
+        // Attempt to fetch it as an EVault first. If that fails the address may be a plain
+        // ERC4626 vault, which `fetch_erc4626` only accepts if the lens confirms it is not an
+        // EVault. A failure can also be transient (e.g. an RPC timeout), and the result is cached
+        // for good: an EVault stored as a plain vault could never be borrowed from.
         let vault = match self.fetch_evault(provider, address).await {
             Ok(evault) => Vault::EVault(Arc::from(evault)),
             Err(err) => {
                 debug!(
                     vault =? address,
                     err =? err,
-                    "Fetching the vault info from the VaultLens failed, assuming this is a plain ERC4626 vault"
+                    "Fetching the vault info from the VaultLens failed, checking if this is a plain ERC4626 vault"
                 );
 
-                Vault::Erc4626(Arc::from(self.fetch_erc4626(provider, address).await?))
+                let erc4626 = self
+                    .fetch_erc4626(provider, address)
+                    .await
+                    .with_context(|| format!("Fetching vault {address} as an EVault failed: {err:#}"))?;
+
+                Vault::Erc4626(Arc::from(erc4626))
             }
         };
 
@@ -204,7 +211,7 @@ impl Vaults {
             .collect())
     }
 
-    /// Fetches the details of a plain ERC4626 vault.
+    /// Fetches the details of a plain ERC4626 vault. Fails if the address is an EVault.
     async fn fetch_erc4626(
         &self,
         provider: &DynProvider,
@@ -220,6 +227,10 @@ impl Vaults {
                     address, self.utils_lens
                 )
             })?;
+
+        if info.isEVault {
+            bail!("Vault {address} is an EVault, refusing to treat it as a plain ERC4626 vault");
+        }
 
         let shares_to_underlying_ratio = get_shares_to_underlying(provider, address).await?;
         self.store_ratio(address, shares_to_underlying_ratio);
@@ -392,7 +403,7 @@ pub async fn poll_vault_ltvs(
 mod test {
     use alloy::{
         node_bindings::Anvil,
-        primitives::{Address, U256, address},
+        primitives::{Address, U256, address, bytes},
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
         rpc::types::TransactionRequest,
         sol,
@@ -490,6 +501,57 @@ mod test {
             cached[&collateral].current_liquidation_ltv(),
             U256::from(new_liquidation_ltv)
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_evault_lookup_does_not_cache_an_evault_as_a_plain_erc4626_vault() {
+        let block = 25644480;
+        // A mainnet EVault.
+        let vault = address!("0xba98fc35c9dfd69178ad5dce9fa29c64554783b5");
+
+        let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
+        let config = load_configuration_file_for_test(&mainnet_rpc, 1).unwrap();
+
+        let network = Anvil::new()
+            .fork(mainnet_rpc)
+            .fork_block_number(block)
+            .try_spawn()
+            .unwrap();
+
+        let provider = ProviderBuilder::new()
+            .connect_http(network.endpoint_url())
+            .erased();
+
+        ensure_contracts_on_fork(
+            &provider,
+            &config.rpc_url,
+            &[config.vault_lens_address, config.utils_lens_address],
+        )
+        .await
+        .unwrap();
+
+        // A VaultLens that reverts every call, standing in for a transient RPC failure.
+        let vault_lens = Address::random();
+        provider
+            .anvil_set_code(vault_lens, bytes!("0x5f5ffd"))
+            .await
+            .unwrap();
+
+        let vaults = Vaults::new(vault_lens, config.utils_lens_address);
+
+        // The lookup must fail, rather than fall back to (and cache) a plain ERC4626 vault.
+        assert!(vaults.get_or_fetch(&provider, vault).await.is_err());
+        assert!(vaults.known_vault_addresses().is_empty());
+
+        // Once the lens works again the vault is fetched as the EVault it is.
+        let lens_code = provider
+            .get_code_at(config.vault_lens_address)
+            .await
+            .unwrap();
+        provider.anvil_set_code(vault_lens, lens_code).await.unwrap();
+
+        let fetched = vaults.get_or_fetch(&provider, vault).await.unwrap();
+        assert!(fetched.as_evault().is_some());
     }
 
     #[test]

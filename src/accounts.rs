@@ -102,6 +102,16 @@ impl AccountsTracker {
     pub fn all_accounts(&self) -> Vec<Account> {
         self.accounts.iter().map(|a| a.clone()).collect()
     }
+
+    /// The addresses of all tracked accounts.
+    pub fn addresses(&self) -> Vec<Address> {
+        self.accounts.iter().map(|a| *a.key()).collect()
+    }
+
+    /// The tracked account with this address, if any.
+    pub fn get(&self, address: Address) -> Option<Account> {
+        self.accounts.get(&address).map(|a| a.clone())
+    }
 }
 
 #[cfg(test)]
