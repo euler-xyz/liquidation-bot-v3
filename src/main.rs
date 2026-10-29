@@ -7,11 +7,14 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder, ext::AnvilApi},
     signers::local::PrivateKeySigner,
 };
-use futures::{StreamExt, stream};
+use futures::{StreamExt, stream, stream::FuturesUnordered};
 use itertools::Itertools;
 use reqwest::Url;
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::broadcast;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+use tokio::{sync::broadcast, time::MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -27,6 +30,7 @@ use crate::{
     oracles::{OracleChange, OraclesCache, poll_oracle_types, poll_oracles},
     prices::EulerPricingApi,
     pyth::fetch_pyth_data,
+    queue::AccountQueue,
     subgraph::{
         TrackingVaultBalancesArgs, fetch_latest_indexed_block, fetch_tracking_vault_balances,
     },
@@ -45,12 +49,14 @@ mod accounts;
 mod api;
 mod config;
 mod dispatcher;
+mod http;
 mod lens;
 mod liquidation;
 mod notifications;
 mod oracles;
 mod prices;
 mod pyth;
+mod queue;
 mod subgraph;
 mod swap;
 #[cfg(test)]
@@ -108,7 +114,7 @@ async fn main() {
     };
 
     // Build the provider.
-    let provider = ProviderBuilder::new().connect_http(config.rpc_url.clone());
+    let provider = ProviderBuilder::new().connect_reqwest(http::rpc_client(), config.rpc_url.clone());
 
     // Do a sanity check that the configured chain id is also the chain id of the provider.
     match provider.get_chain_id().await {
@@ -246,7 +252,7 @@ async fn main() {
 
             let provider = ProviderBuilder::new()
                 .wallet(pk_signer)
-                .connect_http(network.endpoint_url());
+                .connect_reqwest(http::rpc_client(), network.endpoint_url());
 
             // Fund the EOA wallet.
             let _ = provider
@@ -270,7 +276,7 @@ async fn main() {
 
             (ProviderBuilder::new()
                 .wallet(pk_signer)
-                .connect_http(rpc_url), None)
+                .connect_reqwest(http::rpc_client(), rpc_url), None)
         },
     };
 
@@ -294,11 +300,9 @@ async fn main() {
             oracles: oracles.clone(),
             vaults: vaults.clone(),
             state: rx,
-            // The main loop heartbeats once per resync tick, but a tick only completes after the
-            // resync pass itself (which takes a while) has finished.
-            stale_after: tokio::time::Duration::from_secs(
-                config.full_resync_and_check_interval_seconds * 2,
-            ),
+            // The main loop heartbeats on every pass and at least every `HEARTBEAT_INTERVAL`, a
+            // few missed beats means it has stalled.
+            stale_after: HEARTBEAT_INTERVAL * 4,
             vault_filter: config.vault_filter.clone(),
         };
 
@@ -363,6 +367,13 @@ async fn main() {
     .await;
 }
 
+/// How many accounts we fetch after on-chain events, and how many we prepare liquidations for,
+/// concurrently.
+const CONCURRENCY: usize = 16;
+
+/// How often the main loop heartbeats when nothing else is happening.
+pub const HEARTBEAT_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(30);
+
 /// This is the main loop of the liquidation bot.
 pub async fn run(
     config: Config,
@@ -380,60 +391,137 @@ pub async fn run(
     state: Option<tokio::sync::watch::Sender<Heartbeat>>,
     mut notifications: Option<Notifications>,
 ) {
-    let mut resync_interval = tokio::time::interval(tokio::time::Duration::from_secs(
-        config.full_resync_and_check_interval_seconds,
-    ));
+    let resync_period =
+        tokio::time::Duration::from_secs(config.full_resync_and_check_interval_seconds);
+    let mut resync_interval = tokio::time::interval(resync_period);
+    // If a resync is still running when the next one is due, that one is skipped. Make sure we
+    // do not then fire all the missed ticks in a burst.
+    resync_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
-    // NOTE: The same account can end up in the liquidation queue more than once (e.g. a resync
-    // and a price update in quick succession). This is fine: the second attempt will fail at the
-    // executor's gas estimation step and be discarded.
+    // NOTE: Long running work (resyncs, fetching accounts and preparing liquidations) is never
+    // awaited inline. It is pushed into the sets below, which this loop drives concurrently with
+    // handling new events. That way a slow resync or swap quote never delays the reaction to a
+    // price update.
+    //
+    // NOTE: As a resync and an event can now fetch the same account concurrently, a resync can
+    // in rare cases overwrite the state an event just fetched with a slightly older one. The next
+    // event or resync of the account corrects that.
+    let mut resync = FuturesUnordered::new();
+    let mut fetch_queue = AccountQueue::new(CONCURRENCY);
+    let mut fetches = FuturesUnordered::new();
+    // Queuing an account that is already queued or being prepared does not prepare it twice,
+    // which would only send the same liquidation to the executor twice.
+    let mut preparation_queue = AccountQueue::new(CONCURRENCY);
+    let mut preparations = FuturesUnordered::new();
+
+    // The unhealthy accounts found by the last resync that are still to be prepared. A resync
+    // only counts as done once all of them are, as only then every account has a fresh status.
+    let mut resync_pending: Option<HashSet<Address>> = None;
+    let mut health = BotHealth::Syncing;
+    let mut last_resync: Option<tokio::time::Instant> = None;
 
     // NOTE: A closed channel means the watcher task on the other end died, and there is no way
     // to recover it from here. We exit the process so the container gets restarted into a fresh,
     // fully-working state, rather than continuing to run half-functional.
 
     loop {
+        if resync_pending.as_ref().is_some_and(|pending| pending.is_empty()) {
+            resync_pending = None;
+            info!("Finished the resync, including preparing liquidations for the unhealthy accounts.");
+
+            if let Some(notifications) = notifications.as_mut() {
+                notifications.on_full_resync(&accounts.all_accounts());
+            }
+        }
+
+        // Heartbeat on every pass, so a stalled loop is noticed quickly. A loop that keeps going
+        // without completing resyncs is just as broken, so that is reported too.
+        if let Some(ref state_sender) = state {
+            let status = match (&health, last_resync) {
+                (BotHealth::Healthy, Some(at)) if at.elapsed() > resync_period * 2 => {
+                    BotHealth::Error(format!(
+                        "No resync has completed in the last {}s",
+                        at.elapsed().as_secs()
+                    ))
+                }
+                _ => health.clone(),
+            };
+            let _ = state_sender.send(Heartbeat::now(status));
+        }
+
+        // Start whatever queued work there is capacity for.
+        while let Some(address) = fetch_queue.start_next() {
+            fetches.push(fetch_event_account(provider, &config, &vaults, &oracles, address));
+        }
+        while let Some(address) = preparation_queue.start_next() {
+            preparations.push(prepare_account(
+                provider,
+                swap_provider,
+                &config,
+                &oracles,
+                &accounts,
+                &liquidation_channel,
+                address,
+            ));
+        }
+
         tokio::select! {
             _ = resync_interval.tick() => {
-                info!("Syncing all accounts and checking the health for each of them.");
+                if !resync.is_empty() || resync_pending.is_some() {
+                    warn!("The previous resync is still running, skipping this one.");
+                } else {
+                    info!("Syncing all accounts and checking the health for each of them.");
+                    resync.push(refresh_and_check_all(provider, &config, &accounts, &vaults, &oracles));
+                }
+            }
+            Some(result) = resync.next() => {
+                match result {
+                    Ok(unhealthy_accounts) => {
+                        health = BotHealth::Healthy;
+                        last_resync = Some(tokio::time::Instant::now());
 
-                let unhealthy_accounts = match refresh_and_check_all(provider, config.clone(), &accounts, &vaults, &oracles).await {
-                    Ok(unhealthy_accounts) => unhealthy_accounts,
+                        info!("While resyncing we found {} accounts that are unhealthy, now checking which we can/should liquidate..", unhealthy_accounts.len());
+
+                        let pending: HashSet<Address> = unhealthy_accounts.iter().map(|a| a.address).collect();
+                        pending.iter().for_each(|address| preparation_queue.push(*address));
+                        resync_pending = Some(pending);
+                    }
                     Err(e) => {
                         tracing::error!("Error while refreshing, err:{:?}", e);
-
-                        // Still heartbeat: the loop itself is alive, the sync just failed.
-                        if let Some(ref state_sender) = state {
-                            let _ = state_sender.send(Heartbeat::now(BotHealth::Error(format!("Resync failed: {e:?}"))));
-                        }
-
-                        continue;
+                        health = BotHealth::Error(format!("Resync failed: {e:?}"));
                     }
-                };
-
-                // Heartbeat that the bot is healthy and finished syncing.
-                if let Some(ref state_sender) = state {
-                    let _ = state_sender.send(Heartbeat::now(BotHealth::Healthy)).inspect_err(|e| {
-                        tracing::warn!("Could not signal healthy state due to error with sender, err: {:?}", e);
-                    });
+                }
+            }
+            Some(address) = preparations.next() => {
+                preparation_queue.complete(address);
+                if let Some(pending) = resync_pending.as_mut() {
+                    pending.remove(&address);
                 }
 
-                let number_of_unhealthy = unhealthy_accounts.len();
-                info!("While resyncing we found {} accounts that are unhealthy, now checking which we can/should liquidate..", number_of_unhealthy);
-
-                // Turn the unhealthy accounts into prepared liquidations.
-                // This immediatly sends them over the liqudiation channel.
-                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts, Some(&liquidation_channel)).await.inspect_err(|e| {
-                    tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {:?}", e);
-                }).unwrap_or_default();
-
-                if number_of_unhealthy != 0 || !liquidations.is_empty() {
-                    info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
+                // The account now has a fresh status.
+                if let (Some(notifications), Some(account)) = (notifications.as_mut(), accounts.get(address)) {
+                    notifications.on_partial_update(&[account]);
                 }
+            }
+            Some((address, result)) = fetches.next() => {
+                fetch_queue.complete(address);
 
-                // Every account now has a fresh status.
-                if let Some(notifications) = notifications.as_mut() {
-                    notifications.on_full_resync(&accounts.all_accounts());
+                match result {
+                    Ok(account) => {
+                        // Track its (new) state.
+                        accounts.add(account);
+                        info!("Received account event, now tracking account {}", address);
+                    },
+                    Err(lens::FetchAccountError::FilteredOut(vault)) => {
+                        // NOTE: Should we delete the account from the index if it was already
+                        // in there? That *shouldn't* be possible but would be a strange edge-case
+                        // if it was somehow in there.
+                        tracing::debug!("Account {} was not indexed due to it being filtered out by the vault filter for vault {}", address, vault);
+                    },
+                    Err(lens::FetchAccountError::Other(e)) => {
+                        tracing::error!("Issue while fetching new account after finding an event onchain, err: {:?}", e);
+                    },
                 }
             }
             result = oracle_update_channel.recv() => {
@@ -456,49 +544,19 @@ pub async fn run(
 
                 info!("Oracle price updates have occured that affect {} accounts", accounts_affected.len());
 
-                let unhealthy_accounts: Vec<_> = accounts_affected
-                    .iter()
-                    // Blacklisted accounts are still tracked and kept up to date on price
-                    // changes, but must never be considered for liquidation, so skip them
-                    // before touching their status.
-                    .filter(|a| !a.is_blacklisted())
-                    .filter(|a| {
-                        match a.calculate_health(&oracles, &vaults) {
-                            Ok(health) => {
-                                // Update the accounts and mark them as healthy if they are.
-                                if health.is_healthy() {
-                                    a.set_status(LiquidationReasoning::Healthy);
-                                }
+                // Blacklisted accounts are still tracked and kept up to date on price changes,
+                // but must never be considered for liquidation, so skip them before touching
+                // their status.
+                let unhealthy_accounts = check_health(
+                    accounts_affected.iter().filter(|a| !a.is_blacklisted()),
+                    &oracles,
+                    &vaults,
+                );
 
-                                health.is_unhealthy()
-                            },
-                            Err(err) => {
-                                tracing::error!("Error while checking account health: {}", err);
-                                a.set_status(LiquidationReasoning::Error(
-                                        types::LiquidationReasoningError::OracleError {
-                                            message: err.to_string()
-                                        }
-                                    )
-                                );
-
-                                false
-                            },
-                        }
-
-                    })
-                    .cloned()
-                    .collect();
-
-                let number_of_unhealthy = unhealthy_accounts.len();
-
-                // Turn the unhealthy accounts into prepared liquidations.
-                let liquidations = prepare_liquidations(provider, swap_provider, &config, &oracles, unhealthy_accounts, Some(&liquidation_channel)).await.inspect_err(|e| {
-                    tracing::error!("Error preparing liquidations, could not prepare any liquidations because of it, err: {e}");
-                }).unwrap_or_default();
-
-                if number_of_unhealthy != 0 || !liquidations.is_empty() {
-                    info!("During last run we found {} accounts that were unhealthy, for which we attempted liquidation for {} of them", number_of_unhealthy, liquidations.len());
+                if !unhealthy_accounts.is_empty() {
+                    info!("Found {} unhealthy accounts after the price updates, queueing them for liquidation", unhealthy_accounts.len());
                 }
+                unhealthy_accounts.iter().for_each(|a| preparation_queue.push(a.address));
 
                 if let Some(notifications) = notifications.as_mut() {
                     notifications.on_partial_update(&accounts_affected);
@@ -507,196 +565,255 @@ pub async fn run(
             // Track when an event happens on chain involving an account that potentially updates
             // its collaterals and borrows, we (re)fetch the account and add it to our tracker.
             result = account_update_channel.recv() => {
-                let account_event = match result {
-                    Ok(account_event) => account_event,
+                match result {
+                    Ok(account_event) => fetch_queue.push(account_event),
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!("Main loop lagged behind on account events, {n} events were dropped, the next resync will reconcile.");
-                        continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         error!("Account event channel closed, the account watcher is no longer running. Exiting so we get restarted into a working state.");
                         std::process::exit(1);
                     }
                 };
-
-                // Fetch the account.
-                match fetch_account(
-                    provider.clone().erased(),
-                    &config.vault_filter,
-                    &vaults,
-                    config.account_lens_address,
-                    config.evc_address,
-                    account_event,
-                )
-                    .await {
-                        Ok(account) => {
-                            // Track its (new) state.
-                            accounts.add(account);
-                        },
-                        Err(lens::FetchAccountError::FilteredOut(vault)) => {
-                            // NOTE: Should we delete the account from the index if it was already
-                            // in there? That *shouldn't* be possible but would be a strange edge-case
-                            // if it was somehow in there.
-                            tracing::debug!("Account {} was not indexed due to it being filtered out by the vault filter for vault {}", account_event, vault);
-                        },
-                        Err(lens::FetchAccountError::Other(e)) => {
-                            tracing::error!("Issue while fetching new account after finding an event onchain, err: {:?}", e);
-                        },
-                    }
-
-
-                info!("Received account event, now tracking account {}", account_event);
             },
+            _ = heartbeat_interval.tick() => {}
         }
     }
 }
 
-/// For a set of unhealthy accounts, attempts to liquidate them, returns accounts for which it send
-/// a liquidation onto the liquidation channel.
-pub async fn prepare_liquidations(
+/// Health checks the accounts, updating the status of the healthy ones, and returns the ones
+/// that are unhealthy.
+fn check_health<'a>(
+    accounts: impl Iterator<Item = &'a Account>,
+    oracles: &OraclesCache,
+    vaults: &Vaults,
+) -> Vec<Account> {
+    accounts
+        .filter(|a| match a.calculate_health(oracles, vaults) {
+            Ok(health) => {
+                // Update the accounts and mark them as healthy if they are.
+                if health.is_healthy() {
+                    a.set_status(LiquidationReasoning::Healthy);
+                }
+
+                health.is_unhealthy()
+            }
+            Err(err) => {
+                tracing::error!("Error while checking account health: {}", err);
+                a.set_status(LiquidationReasoning::Error(
+                    types::LiquidationReasoningError::OracleError {
+                        message: err.to_string(),
+                    },
+                ));
+
+                false
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Fetches an account after an on-chain event. Also makes sure we have the prices of all the
+/// oracles it depends on before it gets tracked, otherwise the first health check after a price
+/// update would report a (false) oracle error for it.
+async fn fetch_event_account(
+    provider: &DynProvider,
+    config: &Config,
+    vaults: &Vaults,
+    oracles: &OraclesCache,
+    address: Address,
+) -> (Address, Result<Account, lens::FetchAccountError>) {
+    let result = fetch_account(
+        provider.clone(),
+        &config.vault_filter,
+        vaults,
+        config.account_lens_address,
+        config.evc_address,
+        address,
+    )
+    .await;
+
+    if let Ok(account) = &result {
+        oracles
+            .ensure_prices_for(provider, account.dependent_on())
+            .await;
+    }
+
+    (address, result)
+}
+
+/// Attempts to liquidate a tracked account, see [`prepare_account_liquidation`]. Returns the
+/// address of the account once done.
+async fn prepare_account(
     provider: &DynProvider,
     swap_provider: &impl SwapQuoteProvider,
     config: &Config,
     oracles: &OraclesCache,
-    unhealthy_accounts: Vec<Account>,
-    liquidation_channel: Option<&broadcast::Sender<PreparedLiquidation>>,
-) -> Result<Vec<PreparedLiquidation>> {
-    let prepared: Vec<_> = stream::iter(unhealthy_accounts).map(|account| async move {
-        // First we check if any of the oracles this account makes use of are Pyth.
-        // If so we need to fetch their most recent quotes.
-        let mut pyth_ids = Vec::new();
-        for oracle in account.dependent_on().iter() {
-            let oracle_type = oracles.fetch_type(provider, oracle.clone()).await;
+    accounts: &AccountsTracker,
+    liquidation_channel: &broadcast::Sender<PreparedLiquidation>,
+    address: Address,
+) -> Address {
+    // Use the latest state of the account, it may have been refetched since it was queued.
+    let account = match accounts.get(address) {
+        Some(account) if !account.is_blacklisted() => account,
+        // It is no longer tracked (e.g. it repaid its debt) or it can not be liquidated.
+        _ => return address,
+    };
 
-            let oracle_type = match oracle_type {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::warn!(
-                        "Issues with fetching oracle information, optimistically assuming this to not be a pyth oracle: {}",
-                        e
-                    );
-                    continue;
-                }
-            };
+    match prepare_account_liquidation(
+        provider,
+        swap_provider,
+        config,
+        oracles,
+        account,
+        liquidation_channel,
+    )
+    .await
+    {
+        Ok(Some(_)) => debug!("Queued a liquidation for {}", address),
+        Ok(None) => {}
+        Err(e) => warn!("Error during preparing liquidation, err: {:?}", e),
+    }
 
-            oracle_type
-                .pyth_ids()
-                .iter()
-                .for_each(|new_id| pyth_ids.push(*new_id));
-            }
+    address
+}
 
-        // Fetch pyth data if needed.
-        let pyth = match (!pyth_ids.is_empty(), &config.pyth) {
-            (true, Some(pyth)) => {
-                match fetch_pyth_data(provider, pyth.clone(), pyth_ids).await {
-                    Ok(data) => Some(data),
-                    Err(e) => {
-                        // We log the error and then skip this liquidation as we need to attempt to
-                        // process other liquidations.
-                        tracing::error!(
-                            "Could not fetch pyth data as we were attempting a liquidation, err: {:?}",
-                            e
-                        );
+/// Attempts to liquidate an unhealthy account, sending the prepared liquidation (if any) over
+/// the liquidation channel.
+pub async fn prepare_account_liquidation(
+    provider: &DynProvider,
+    swap_provider: &impl SwapQuoteProvider,
+    config: &Config,
+    oracles: &OraclesCache,
+    account: Account,
+    liquidation_channel: &broadcast::Sender<PreparedLiquidation>,
+) -> Result<Option<PreparedLiquidation>> {
+    // First we check if any of the oracles this account makes use of are Pyth.
+    // If so we need to fetch their most recent quotes.
+    let mut pyth_ids = Vec::new();
+    for oracle in account.dependent_on().iter() {
+        let oracle_type = oracles.fetch_type(provider, oracle.clone()).await;
 
-                        account.set_status(LiquidationReasoning::Error(
-                                LiquidationReasoningError::OracleError {
-                                    message: "Unable to fetch Pyth data".to_string(),
-                                },
-                        ));
-                        return Err(anyhow!(
-                                "Unable to fetch pyth data due to {}", e
-                        ));
-                    }
-                }
-            }
-            (false, _) => None,
-            // Somehow this account its position uses pyth oracle but pyth is not configured for
-            // this chain, this is a critical error.
-            (true, None) => {
-                account.set_status(LiquidationReasoning::Error(
-                        LiquidationReasoningError::OracleError {
-                            message: "Unable to fetch Pyth data".to_string(),
-                        },
-                ));
-
-                return Err(anyhow!(
-                        "This account requires us to update pyth oracles, but there is no pyth deployment configured for this chain"
-                ));
+        let oracle_type = match oracle_type {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    "Issues with fetching oracle information, optimistically assuming this to not be a pyth oracle: {}",
+                    e
+                );
+                continue;
             }
         };
 
-        debug!("Checking liquidation for {}", account.address);
-
-        match prepare_liquidation(
-            provider,
-            swap_provider,
-            pyth,
-            config.liquidator_address,
-            account.clone().clone(),
-        )
-            .await
-            {
-                Ok(Some(liquidation)) => {
-                    // If we should send it to the liquidation channel we do so now.
-                    if let Some(liquidation_channel) = liquidation_channel {
-                        // NOTE: A broadcast send never blocks. If the ring buffer is full the
-                        // oldest liquidation is overwritten, which is the one we care about
-                        // least (the executor will log it as `Lagged`). It only errors when
-                        // there is no receiver at all, i.e. the executor is gone — which we
-                        // cannot recover from here, so we exit and let the container restart
-                        // us into a working state.
-                        if let Err(e) = liquidation_channel.send(liquidation.clone()) {
-                            tracing::error!(
-                                "Could not queue liquidation for {}, the liquidation executor is no longer running. Exiting so we get restarted into a working state. err: {}",
-                                account.address, e
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-
-                    debug!("Found route to liquidate {}", account.address);
-                    Ok(Some(liquidation))
-                }
-                Ok(None) => {
-                    account.set_status(LiquidationReasoning::NoSwapPath);
-                    debug!(
-                        "Was not able to find a route to liquidate {}",
-                        account.address
-                    );
-                    Ok(None)
-                }
-                Err(e) => {
-                    account.set_status(LiquidationReasoning::Error(e.clone()));
-
-                    tracing::warn!(
-                        account =? account.address,
-                        "Issue when attempting to liquidate account, err: {:?}",
-                        e
-                    );
-
-                    Err(anyhow!("Error while attempting to prepare liquidation, err: {:?}", e))
-                }
-            }
+        oracle_type
+            .pyth_ids()
+            .iter()
+            .for_each(|new_id| pyth_ids.push(*new_id));
     }
-    ).buffer_unordered(16)
-        .filter_map(async move |a|
-            match a {
-                Ok(a) => a,
-                Err(e) => { 
-                    warn!("Error during preparing liquidation, err: {:?}", e);
-                    None
+
+    // Fetch pyth data if needed.
+    let pyth = match (!pyth_ids.is_empty(), &config.pyth) {
+        (true, Some(pyth)) => match fetch_pyth_data(provider, pyth.clone(), pyth_ids).await {
+            Ok(data) => Some(data),
+            Err(e) => {
+                // We log the error and then skip this liquidation as we need to attempt to
+                // process other liquidations.
+                tracing::error!(
+                    "Could not fetch pyth data as we were attempting a liquidation, err: {:?}",
+                    e
+                );
+
+                account.set_status(LiquidationReasoning::Error(
+                    LiquidationReasoningError::OracleError {
+                        message: "Unable to fetch Pyth data".to_string(),
+                    },
+                ));
+                return Err(anyhow!("Unable to fetch pyth data due to {}", e));
+            }
+        },
+        (false, _) => None,
+        // Somehow this account its position uses pyth oracle but pyth is not configured for
+        // this chain, this is a critical error.
+        (true, None) => {
+            account.set_status(LiquidationReasoning::Error(
+                LiquidationReasoningError::OracleError {
+                    message: "Unable to fetch Pyth data".to_string(),
                 },
-            } 
-        )
-        .collect()
-        .await;
-    
-    Ok(prepared)
+            ));
+
+            return Err(anyhow!(
+                "This account requires us to update pyth oracles, but there is no pyth deployment configured for this chain"
+            ));
+        }
+    };
+
+    debug!("Checking liquidation for {}", account.address);
+
+    match prepare_liquidation(
+        provider,
+        swap_provider,
+        pyth,
+        config.liquidator_address,
+        account.clone(),
+    )
+    .await
+    {
+        Ok(Some(liquidation)) => {
+            // NOTE: A broadcast send never blocks. If the ring buffer is full the oldest
+            // liquidation is overwritten, which is the one we care about least (the executor
+            // will log it as `Lagged`). It only errors when there is no receiver at all, i.e.
+            // the executor is gone — which we cannot recover from here, so we exit and let the
+            // container restart us into a working state.
+            if let Err(e) = liquidation_channel.send(liquidation.clone()) {
+                tracing::error!(
+                    "Could not queue liquidation for {}, the liquidation executor is no longer running. Exiting so we get restarted into a working state. err: {}",
+                    account.address,
+                    e
+                );
+                std::process::exit(1);
+            }
+
+            debug!("Found route to liquidate {}", account.address);
+            Ok(Some(liquidation))
+        }
+        Ok(None) => {
+            account.set_status(LiquidationReasoning::NoSwapPath);
+            debug!(
+                "Was not able to find a route to liquidate {}",
+                account.address
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            account.set_status(LiquidationReasoning::Error(e.clone()));
+
+            tracing::warn!(
+                account =? account.address,
+                "Issue when attempting to liquidate account, err: {:?}",
+                e
+            );
+
+            Err(anyhow!(
+                "Error while attempting to prepare liquidation, err: {:?}",
+                e
+            ))
+        }
+    }
+}
+
+/// The accounts to refetch during a resync: every account the subgraph lists, plus every
+/// account we track that it does not.
+///
+/// The subgraph only lists accounts that currently have debt. An account that repaid its debt
+/// emits no EVC event, so without this it would linger in the tracker with its stale positions
+/// forever. Refetching an account without debt removes it from the tracker.
+fn accounts_to_resync(listed: Vec<Address>, tracked: Vec<Address>) -> Vec<Address> {
+    listed.into_iter().chain(tracked).unique().collect()
 }
 
 pub async fn refresh_and_check_all(
     provider: &DynProvider,
-    config: Config,
+    config: &Config,
     accounts: &Arc<AccountsTracker>,
     vaults: &Vaults,
     oracles: &OraclesCache,
@@ -727,7 +844,10 @@ pub async fn refresh_and_check_all(
     }
 
     // fetch all accounts from the subgraph.
-    let accounts_to_fetch = fetch_list_of_accounts(subgraph_url, starting_block).await?;
+    let accounts_to_fetch = accounts_to_resync(
+        fetch_list_of_accounts(subgraph_url, starting_block).await?,
+        accounts.addresses(),
+    );
 
     info!("Re-syncing {} accounts", accounts_to_fetch.len());
 
@@ -774,35 +894,15 @@ pub async fn refresh_and_check_all(
         .await;
 
     // Healthcheck all of the accounts, return the ones that are not healthy.
-    Ok(accounts
-        .all_accounts()
-        .iter()
-        // Blacklisted accounts stay tracked (and keep getting fresh prices above so the
-        // observability API can still show a live health value for them), but they must
-        // never be considered for liquidation, so skip them before touching their status.
-        .filter(|a| !a.is_blacklisted())
-        .filter(|a| match a.calculate_health(oracles, vaults) {
-            Ok(health) => {
-                // Update the accounts and mark them as healthy if they are.
-                if health.is_healthy() {
-                    a.set_status(LiquidationReasoning::Healthy);
-                }
-
-                health.is_unhealthy()
-            }
-            Err(err) => {
-                tracing::error!("Error while checking account health: {}", err);
-                a.set_status(LiquidationReasoning::Error(
-                    types::LiquidationReasoningError::OracleError {
-                        message: err.to_string(),
-                    },
-                ));
-
-                false
-            }
-        })
-        .cloned()
-        .collect())
+    //
+    // Blacklisted accounts stay tracked (and keep getting fresh prices above so the
+    // observability API can still show a live health value for them), but they must
+    // never be considered for liquidation, so skip them before touching their status.
+    Ok(check_health(
+        accounts.all_accounts().iter().filter(|a| !a.is_blacklisted()),
+        oracles,
+        vaults,
+    ))
 }
 
 pub async fn fetch_list_of_accounts(url: Url, at_block: u64) -> Result<Vec<Address>> {
@@ -944,7 +1044,7 @@ mod test {
     };
     use alloy::{
         node_bindings::Anvil,
-        primitives::{U256, address, bytes},
+        primitives::{Address, U256, address, bytes},
         providers::{Provider, ProviderBuilder, ext::AnvilApi},
     };
     use tokio::sync::broadcast;
@@ -977,6 +1077,18 @@ mod test {
 
             Ok(Some(liq))
         }
+    }
+
+    #[test]
+    fn resync_also_refetches_tracked_accounts_the_subgraph_no_longer_lists() {
+        let (listed, repaid, both) = (Address::random(), Address::random(), Address::random());
+
+        let to_fetch = super::accounts_to_resync(vec![listed, both, listed], vec![both, repaid]);
+
+        // Every account exactly once, including the one that repaid its debt and so dropped
+        // out of the subgraph.
+        assert_eq!(to_fetch.len(), 3);
+        assert!([listed, repaid, both].iter().all(|a| to_fetch.contains(a)));
     }
 
     #[tokio::test]

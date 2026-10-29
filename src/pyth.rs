@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::LazyLock};
 
 use alloy::{
     primitives::{Bytes, FixedBytes, U256},
@@ -9,7 +9,10 @@ use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use serde::Deserialize;
 
-use crate::config::PythConfig;
+use crate::{config::PythConfig, http};
+
+/// Shared by every Pyth request, so connections are reused.
+static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(http::client);
 
 #[cfg(test)]
 pub const DEFAULT_PYTH_ENDPOINT: &str = "https://hermes.pyth.network/";
@@ -63,8 +66,7 @@ async fn fetch_pyth(
         ids.iter().format("&ids[]=")
     );
 
-    let client = reqwest::Client::new();
-    let mut request = client.get(request_url.clone());
+    let mut request = CLIENT.get(request_url.clone());
     if let Some(api_key) = api_key {
         request = request.bearer_auth(api_key);
     }
