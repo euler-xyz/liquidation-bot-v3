@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+};
 
 use alloy::{
     dyn_abi::SolType,
@@ -49,6 +52,9 @@ pub struct OraclesCache {
 
     // The oracle outputs.
     prices: Arc<DashMap<OracleIdentifier, OracleOutput>>,
+
+    // The oracles that were unused at the last prune, see `OraclesCache::prune`.
+    unused: Arc<Mutex<HashSet<OracleIdentifier>>>,
 }
 
 impl OraclesCache {
@@ -59,7 +65,41 @@ impl OraclesCache {
             active_oracles: Arc::new(DashSet::new()),
             oracles: Arc::new(DashMap::new()),
             prices: Arc::new(DashMap::new()),
+            unused: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Stops tracking the oracles that are not in `in_use`: they are no longer polled and their
+    /// price and type are forgotten. Returns how many oracles were dropped.
+    ///
+    /// An oracle is only dropped once it was unused at two consecutive prunes. An account that
+    /// is being fetched concurrently may already have fetched the price of an oracle it depends
+    /// on, without that oracle being reported as in use yet. Dropping it right away would make
+    /// the account's first health check fail on a missing price.
+    pub fn prune(&self, in_use: &HashSet<OracleIdentifier>) -> usize {
+        let unused: HashSet<OracleIdentifier> = self
+            .active_oracles
+            .iter()
+            .map(|id| id.key().clone())
+            .chain(self.prices.iter().map(|p| p.key().clone()))
+            .chain(self.oracles.iter().map(|o| o.key().clone()))
+            .filter(|id| !in_use.contains(id))
+            .collect();
+
+        // A poisoned lock only means a previous prune panicked, the set itself is still usable.
+        let mut previously_unused = self.unused.lock().unwrap_or_else(|e| e.into_inner());
+        let (dropped, newly_unused): (Vec<_>, Vec<_>) = unused
+            .into_iter()
+            .partition(|id| previously_unused.contains(id));
+
+        for id in dropped.iter() {
+            self.active_oracles.remove(id);
+            self.prices.remove(id);
+            self.oracles.remove(id);
+        }
+        *previously_unused = newly_unused.into_iter().collect();
+
+        dropped.len()
     }
 
     /// Ensures that we have a price for all of the oracles, as long as they are reporting a price.
@@ -373,6 +413,10 @@ pub async fn poll_oracles(
         tokio::time::sleep(interval).await;
         let active_oracles = oracles.active_oracles();
 
+        // Forget the oracles that are no longer tracked.
+        let active: HashSet<&OracleIdentifier> = active_oracles.iter().collect();
+        prices.retain(|id, _| active.contains(id));
+
         if active_oracles.is_empty() {
             continue;
         }
@@ -634,6 +678,8 @@ pub enum OracleType {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashSet;
+
     use alloy::{
         primitives::{Address, address},
         providers::{Provider, ProviderBuilder},
@@ -797,6 +843,31 @@ mod test {
             quote_asset: Address::random(),
             adapter: Address::random(),
         }
+    }
+
+    #[test]
+    fn prune_drops_oracles_only_once_they_were_unused_twice() {
+        let (used, unused, used_again) = (random_id(), random_id(), random_id());
+
+        let cache = OraclesCache::new(Address::ZERO, None);
+        for id in [&used, &unused, &used_again] {
+            cache.insert_price_for_test(id.clone(), U256::from(1));
+        }
+
+        // The first time an oracle is unused it is kept.
+        assert_eq!(cache.prune(&HashSet::from([used.clone()])), 0);
+        assert!(cache.get_quote(&unused, U256::from(1)).is_ok());
+
+        // An oracle that is in use again in between is not dropped...
+        assert_eq!(
+            cache.prune(&HashSet::from([used.clone(), used_again.clone()])),
+            1
+        );
+        assert!(cache.get_quote(&used_again, U256::from(1)).is_ok());
+        assert!(cache.get_quote(&used, U256::from(1)).is_ok());
+
+        // ...but one that stayed unused is.
+        assert!(cache.get_quote(&unused, U256::from(1)).is_err());
     }
 
     #[test]
