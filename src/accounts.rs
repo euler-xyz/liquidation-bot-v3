@@ -29,22 +29,16 @@ impl AccountsTracker {
     }
 
     pub fn add(&self, account: Account) {
-        // Check if we are already tracking this account.
-        if let Some(old_account) = self.accounts.get(&account.address) {
-            // Remove it as an oracle_dependent for its oracles.
-            old_account.dependent_on().iter().for_each(|o| {
-                let mut od = self.oracle_dependents.entry(o.clone()).or_default();
-                od.retain(|a| *a != account.address);
-            });
-            drop(old_account);
-        }
-
         // Skip accounts that have no borrows, these are not of interest to us.
         // If it existed before we remove it now.
         if account.borrows.is_empty() {
-            self.accounts.remove(&account.address);
+            self.remove(account.address);
             return;
         }
+
+        // If we are already tracking this account, its old positions may have depended on
+        // other oracles.
+        self.forget_dependencies(account.address);
 
         account.dependent_on().iter().for_each(|o| {
             let mut od = self.oracle_dependents.entry(o.clone()).or_default();
@@ -52,6 +46,29 @@ impl AccountsTracker {
         });
 
         let _ = self.accounts.insert(account.address, account);
+    }
+
+    /// Stops tracking an account, a no-op if it is not tracked.
+    pub fn remove(&self, address: Address) {
+        self.forget_dependencies(address);
+        self.accounts.remove(&address);
+    }
+
+    /// Removes a tracked account as a dependent of the oracles its positions depend on. Oracles
+    /// that no account depends on anymore are dropped entirely, so they are no longer reported
+    /// as being in use.
+    fn forget_dependencies(&self, address: Address) {
+        let Some(oracles) = self.accounts.get(&address).map(|a| a.dependent_on()) else {
+            return;
+        };
+
+        for oracle in oracles {
+            if let Some(mut dependents) = self.oracle_dependents.get_mut(&oracle) {
+                dependents.retain(|a| *a != address);
+            }
+            self.oracle_dependents
+                .remove_if(&oracle, |_, dependents| dependents.is_empty());
+        }
     }
 
     /// Get all unique oracle identifiers.
@@ -181,6 +198,40 @@ mod test {
             .dependent_on()
             .iter()
             .for_each(|dp| assert!(accounts.get_impacted_accounts(dp).is_empty()));
+
+        // And that its oracles are no longer reported as being in use.
+        assert!(accounts.get_oracle_identifiers().is_empty());
+    }
+
+    #[test]
+    fn removing_an_account_forgets_it_and_its_oracles() {
+        let accounts = AccountsTracker::new();
+        let account = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition::generate_random()],
+            vec![VaultCollateralPosition::generate_random()],
+        );
+        let other = Account::new(
+            Address::random(),
+            vec![VaultBorrowPosition::generate_random()],
+            vec![],
+        );
+
+        accounts.add(account.clone());
+        accounts.add(other.clone());
+        accounts.remove(account.address);
+
+        assert!(accounts.get(account.address).is_none());
+        assert!(accounts.get(other.address).is_some());
+        assert_eq!(
+            accounts.get_oracle_identifiers(),
+            other.dependent_on(),
+            "only the oracles of the remaining account should be in use"
+        );
+
+        // Removing an account that is not tracked is a no-op.
+        accounts.remove(Address::random());
+        assert_eq!(accounts.all_accounts().len(), 1);
     }
 
     #[tokio::test]

@@ -514,9 +514,9 @@ pub async fn run(
                         info!("Received account event, now tracking account {}", address);
                     },
                     Err(lens::FetchAccountError::FilteredOut(vault)) => {
-                        // NOTE: Should we delete the account from the index if it was already
-                        // in there? That *shouldn't* be possible but would be a strange edge-case
-                        // if it was somehow in there.
+                        // The account is out of scope (e.g. it moved its borrow out of the
+                        // whitelist), stop tracking it if we were.
+                        accounts.remove(address);
                         tracing::debug!("Account {} was not indexed due to it being filtered out by the vault filter for vault {}", address, vault);
                     },
                     Err(lens::FetchAccountError::Other(e)) => {
@@ -870,9 +870,9 @@ pub async fn refresh_and_check_all(
                     accounts.add(account);
                 }
                 Err(lens::FetchAccountError::FilteredOut(vault)) => {
-                    // NOTE: Should we delete the account from the index if it was already
-                    // in there? That *shouldn't* be possible but would be a strange edge-case
-                    // if it was somehow in there.
+                    // The account is out of scope (e.g. it moved its borrow out of the
+                    // whitelist), stop tracking it if we were.
+                    accounts.remove(account);
                     tracing::debug!(
                         "Account {} was not indexed due to it being filtered out by the vault filter for vault {}",
                         *account,
@@ -892,6 +892,12 @@ pub async fn refresh_and_check_all(
     oracles
         .ensure_prices_for(provider, accounts.get_oracle_identifiers())
         .await;
+
+    // Stop tracking (and polling) the oracles no account depends on anymore.
+    let pruned = oracles.prune(&accounts.get_oracle_identifiers().into_iter().collect());
+    if pruned > 0 {
+        info!("Stopped tracking {pruned} oracles that no account depends on anymore");
+    }
 
     // Healthcheck all of the accounts, return the ones that are not healthy.
     //

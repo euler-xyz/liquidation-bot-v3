@@ -24,6 +24,9 @@ notification_blacklist = [
     { address = "0xa3e0943d0196F76db58d3549C9a7528Ef4ac335F", reason = "esUSP-3: sUSP (Pareto staked USP) has no instant redemption (maxRedeem is 0 for the swapper, ERC4626ExceededMaxRedeem) and every swap route redeems it, so liquidations seizing it always revert." },
     { address = "0x4f36Bebf5dDb4b804F9C72644aEe82BAd165BFfc", reason = "ehwHLP-1: hwHLP sells below its oracle value, swap quotes never cover the repayment so liquidations revert on repay (E_TransferFromFailed)." },
     { address = "0xb53b4B2590457bE63E1DCdAffa6a18ECd44D96D2", reason = "ePT-USDe-25SEP2025-1: expired PT collateral, the swap API returns no quotes for it." },
+    { address = "0x7fAb04FF2717d9A6B71A51c56c29697179597D40", reason = "eUSDC-95: LIQUIDATE (and deposit/withdraw/borrow) is disabled on the vault, every liquidation reverts E_OperationDisabled. Not in the vault_filter as it still has healthy borrowers." },
+    { address = "0x29D824d54Fd5118543E81637b8f865d045191F30", reason = "eynETH-2: ynETH trades ~10% below its oracle price, swap quotes do not cover the WETH repayment." },
+    { address = "0x6d18F74AAD8494B789aE34b5455816F79664d209", reason = "eynETHx-2: ynETHx trades ~18% below its oracle price, swap quotes do not cover the WETH repayment." },
 ]
 
 [pyth]
