@@ -133,6 +133,18 @@ CORS is open to any origin. The API is read-only.
 
 The `configs/` directory ships configuration for the chains Euler V3 is currently deployed on. As of this writing those are Ethereum (1), BSC (56), Unichain (130), Monad (143), Sonic (146), TAC (239), Swell (1923), Base (8453), Plasma (9745), Arbitrum (42161), Avalanche (43114), Linea (59144), BOB (60808), and Berachain (80094). Adding a new chain is a matter of dropping a new `Config.<chain_id>.toml` into the directory.
 
+## Liquidator contract
+
+The bot submits liquidations through the `Liquidator` contract, which lives in the Foundry project under `contracts/`. Install the dependencies with `git submodule update --init --recursive`, then build and test it from that directory with `forge build` and `forge test`.
+
+To deploy it on a chain, first make sure the chain has a `configs/Config.<chain_id>.toml`. The deploy script reads the EVC, swapper and Pyth addresses from that file, so the deployed liquidator always matches what the bot checks it against on startup. Run it from `contracts/`:
+
+```
+forge script script/DeployLiquidator.s.sol --rpc-url <rpc> --account <keystore> --broadcast --verify
+```
+
+The script deploys with the broadcasting account as owner. To use a different owner, set `LIQUIDATOR_OWNER`. You can also set `SWAP_VERIFIER_ADDRESS`, which the contract stores for reference only. Once the contract is deployed, set `liquidator_address` in the chain's config to the logged address.
+
 ## Tests
 
 ```

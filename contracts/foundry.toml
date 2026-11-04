@@ -1,0 +1,24 @@
+[profile.default]
+src = "src"
+script = "script"
+test = "test"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.26"
+# The liquidator is deployed on every chain in `../configs`, some of which lag behind on hard
+# forks. Paris avoids opcodes (PUSH0, MCOPY) that not all of them support.
+evm_version = "paris"
+optimizer = true
+optimizer_runs = 200
+# The deploy script reads the bot's per-chain config to get the addresses it deploys with.
+fs_permissions = [{ access = "read", path = "../configs" }]
+
+# Vendored Euler/Pyth interfaces and test helpers are kept as upstream wrote them.
+[fmt]
+line_length = 120
+ignore = ["src/interfaces/*.sol", "src/SwapVerifier.sol", "test/mocks/*.sol"]
+
+[lint]
+ignore = ["src/interfaces/*.sol", "src/SwapVerifier.sol", "test/mocks/*.sol"]
+# Scripts and tests need file and environment access.
+exclude_lints = ["unsafe-cheatcode"]
