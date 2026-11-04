@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.0;
 
-import {IERC4626} from "./IEVault.sol";
+import {IERC4626} from "../../src/interfaces/IEVault.sol";
 
 contract MockPriceOracle {
     error PriceOracle_InvalidConfiguration();
