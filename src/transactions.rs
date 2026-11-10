@@ -163,8 +163,10 @@ pub async fn execute_liquidation_queue<T: Provider + WalletProvider>(
                 }
             }
 
-            // We do not need to notify the main thread that this execution was a success, as our
-            // liquidation transaction will cause a `AccountStatusCheck` event which cause the account watcher to sync to the new state.
+            // We do not need to notify the main thread that this execution was a success. EVK
+            // forgives the violator's account status check, so there is no EVC event for it, but
+            // the vault emits `Liquidate` and `Repay` events for the violator which cause the
+            // account watcher to sync it to the new state.
         }
         // We fell behind and the channel dropped the oldest queued liquidations. That is fine:
         // the oldest ones are the least valuable (prices have moved on), and any account that

@@ -129,6 +129,11 @@ impl AccountsTracker {
     pub fn get(&self, address: Address) -> Option<Account> {
         self.accounts.get(&address).map(|a| a.clone())
     }
+
+    /// If the account with this address is tracked.
+    pub fn contains(&self, address: Address) -> bool {
+        self.accounts.contains_key(&address)
+    }
 }
 
 #[cfg(test)]

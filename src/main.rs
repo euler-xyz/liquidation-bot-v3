@@ -148,14 +148,19 @@ async fn main() {
     // (and logged as `Lagged` on the consumer side) and the next full resync reconciles.
     let (account_events_sender, account_events_receiver) = broadcast::channel::<Address>(512);
     let account_provider = provider.clone();
-    tokio::spawn(async move {
-        watch_chain_for_accounts_from_latest(
-            account_provider.erased(),
-            config.evc_address,
-            account_events_sender,
-        )
-        .await
-    });
+    {
+        let (vaults, accounts) = (vaults.clone(), accounts.clone());
+        tokio::spawn(async move {
+            watch_chain_for_accounts_from_latest(
+                account_provider.erased(),
+                config.evc_address,
+                vaults,
+                accounts,
+                account_events_sender,
+            )
+            .await
+        });
+    }
 
     let (oracles_sender, oracles_receiver) = broadcast::channel::<Vec<OracleChange>>(128);
     let oracle_provider = provider.clone();

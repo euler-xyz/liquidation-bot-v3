@@ -349,6 +349,12 @@ impl Vaults {
     pub(crate) fn insert_ltvs_for_test(&self, controller: Address, ltvs: HashMap<Address, Ltv>) {
         self.ltvs.insert(controller, Arc::new(ltvs));
     }
+
+    /// Test-only helper to make a vault known without hitting the chain.
+    #[cfg(test)]
+    pub(crate) fn insert_vault_for_test(&self, vault: Vault) {
+        self.vaults.insert(vault.erc4626().address, vault);
+    }
 }
 
 /// Periodically refreshes the `shares_to_underlying` ratio for every vault the bot

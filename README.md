@@ -6,7 +6,7 @@ A liquidation bot for the Euler V3 lending protocol. It tracks borrowers across 
 
 The bot runs as a long-lived process against a single chain. On startup it does a one-shot historical sync from the Euler subgraph to discover every active borrower, then keeps state fresh in three concurrent ways:
 
-- It watches the EVC contract for on-chain events so any new or changed account is picked up in real time.
+- It watches the chain for events so any new or changed account is picked up in real time: the EVC events for operations that require an account status check (e.g. borrows and withdrawals), and the vault events for the ones that do not (deposits, repays and liquidations, as EVK forgives the violator's account status check).
 - It polls the configured oracles (including Pyth) on a fixed interval. When a price moves, every account that depends on the affected oracle is re-evaluated.
 - It performs a full resync and health check on every account at a longer interval as a safety net.
 

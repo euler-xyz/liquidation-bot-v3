@@ -7,11 +7,12 @@ use alloy::{
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 use tokio::{sync::broadcast::Sender, time};
 use tracing::{debug, error};
 
 use crate::{
+    accounts::AccountsTracker,
     oracles::{ORACLE_PRICING_UNIT, OraclesCache},
     types::{Account, OracleIdentifier, Vault},
     vaults::Vaults,
@@ -51,6 +52,27 @@ sol! {
         event CollateralStatus(address indexed account, address indexed collateral, bool enabled);
     }
 
+    /// The EVault events of operations that change an account's position without an account
+    /// status check, so without the EVC emitting an event for the account.
+    #[sol(rpc)]
+    contract VaultEvents {
+        /// @notice Emitted on a deposit, which never requires an account status check.
+        event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
+
+        /// @notice Emitted for the account whose debt decreased. Besides on a repay, this is also
+        /// emitted for the violator of a liquidation, whose account status check is forgiven.
+        event Repay(address indexed account, uint256 assets);
+
+        /// @notice Emitted when an account is liquidated.
+        event Liquidate(
+            address indexed liquidator,
+            address indexed violator,
+            address collateral,
+            uint256 repayAssets,
+            uint256 yieldBalance
+        );
+    }
+
     #[sol(rpc)]
     interface ILiquidation {
         /// @notice Checks to see if a liquidation would be profitable, without actually doing anything
@@ -81,6 +103,8 @@ const REORG_MARGIN: u64 = 10;
 pub async fn watch_chain_for_accounts_from_latest(
     provider: DynProvider,
     evc: Address,
+    vaults: Vaults,
+    accounts: Arc<AccountsTracker>,
     account_update_channel: Sender<Address>,
 ) {
     // NOTE: We have to keep retrying here, falling back to some default block (e.g. 0) would
@@ -95,7 +119,32 @@ pub async fn watch_chain_for_accounts_from_latest(
         }
     };
 
-    watch_chain_for_accounts(provider, evc, account_update_channel, latest).await
+    watch_chain_for_accounts(
+        provider,
+        evc,
+        vaults,
+        accounts,
+        account_update_channel,
+        latest,
+    )
+    .await
+}
+
+/// The logs of the events that change an account's position. The EVC emits an event for every
+/// operation that requires an account status check. The vault events cover the operations that
+/// do not (deposits and repays), and the debt a liquidation takes off the violator, as EVK
+/// forgives the violator's account status check.
+fn account_events_filter(evc: Address, vaults: Vec<Address>) -> Filter {
+    Filter::new()
+        .address(std::iter::once(evc).chain(vaults).collect::<Vec<_>>())
+        .event_signature(vec![
+            Events::AccountStatusCheck::SIGNATURE_HASH,
+            Events::ControllerStatus::SIGNATURE_HASH,
+            Events::CollateralStatus::SIGNATURE_HASH,
+            VaultEvents::Deposit::SIGNATURE_HASH,
+            VaultEvents::Repay::SIGNATURE_HASH,
+            VaultEvents::Liquidate::SIGNATURE_HASH,
+        ])
 }
 
 /// Determines the next (inclusive) block range to query logs for, given the last block we fully
@@ -121,10 +170,14 @@ fn next_range(processed_up_to: Option<u64>, latest: u64, chunk: u64) -> Option<(
     Some((from, to))
 }
 
-/// Watches the chain for account update events, starting at (and including) `from_block`.
+/// Watches the chain for account update events, starting at (and including) `from_block`. The
+/// vault events are watched for every vault in `vaults`, and only reported for the accounts in
+/// `accounts`.
 pub async fn watch_chain_for_accounts(
     provider: DynProvider,
     evc: Address,
+    vaults: Vaults,
+    accounts: Arc<AccountsTracker>,
     account_update_channel: Sender<Address>,
     from_block: u64,
 ) {
@@ -144,7 +197,9 @@ pub async fn watch_chain_for_accounts(
 
         // Process chunks back-to-back until we have caught up with the latest block.
         while let Some((from, to)) = next_range(processed_up_to, latest, chunk) {
-            let filter = Filter::new().address(evc).from_block(from).to_block(to);
+            let filter = account_events_filter(evc, vaults.known_vault_addresses())
+                .from_block(from)
+                .to_block(to);
 
             let logs: Vec<Log> = match provider.get_logs(&filter).await {
                 Ok(logs) => logs,
@@ -161,7 +216,7 @@ pub async fn watch_chain_for_accounts(
                 }
             };
 
-            emit_accounts(&logs, &account_update_channel);
+            emit_accounts(&logs, &accounts, &account_update_channel);
 
             // Advance past the range we just queried.
             processed_up_to = Some(to);
@@ -175,33 +230,54 @@ pub async fn watch_chain_for_accounts(
     }
 }
 
-/// Decodes the accounts from the EVC logs and sends each of them over the channel once.
-fn emit_accounts(logs: &[Log], account_update_channel: &Sender<Address>) {
+/// Decodes the accounts from the EVC and vault logs and sends each of them over the channel once.
+/// The accounts from vault logs are only sent if they are tracked: a deposit or repay by an
+/// account we do not track can not make it one with debt.
+fn emit_accounts(
+    logs: &[Log],
+    accounts: &AccountsTracker,
+    account_update_channel: &Sender<Address>,
+) {
     let mut users = HashSet::new();
     for log in logs {
         // Decode any of these events, then extract the account from it and add it to the
         // set.
-        match log.topic0() {
-            Some(&Events::AccountStatusCheck::SIGNATURE_HASH) => {
-                match Events::AccountStatusCheck::decode_log(&log.inner) {
-                    Ok(decoded) => users.insert(decoded.account),
-                    Err(_) => continue,
-                };
-            }
-            Some(&Events::ControllerStatus::SIGNATURE_HASH) => {
-                match Events::ControllerStatus::decode_log(&log.inner) {
-                    Ok(decoded) => users.insert(decoded.account),
-                    Err(_) => continue,
-                };
-            }
-            Some(&Events::CollateralStatus::SIGNATURE_HASH) => {
-                match Events::CollateralStatus::decode_log(&log.inner) {
-                    Ok(decoded) => users.insert(decoded.account),
-                    Err(_) => continue,
-                };
-            }
-            _ => {}
+        let (account, only_if_tracked) = match log.topic0() {
+            Some(&Events::AccountStatusCheck::SIGNATURE_HASH) => (
+                Events::AccountStatusCheck::decode_log(&log.inner).map(|e| e.account),
+                false,
+            ),
+            Some(&Events::ControllerStatus::SIGNATURE_HASH) => (
+                Events::ControllerStatus::decode_log(&log.inner).map(|e| e.account),
+                false,
+            ),
+            Some(&Events::CollateralStatus::SIGNATURE_HASH) => (
+                Events::CollateralStatus::decode_log(&log.inner).map(|e| e.account),
+                false,
+            ),
+            Some(&VaultEvents::Deposit::SIGNATURE_HASH) => (
+                VaultEvents::Deposit::decode_log(&log.inner).map(|e| e.owner),
+                true,
+            ),
+            Some(&VaultEvents::Repay::SIGNATURE_HASH) => (
+                VaultEvents::Repay::decode_log(&log.inner).map(|e| e.account),
+                true,
+            ),
+            Some(&VaultEvents::Liquidate::SIGNATURE_HASH) => (
+                VaultEvents::Liquidate::decode_log(&log.inner).map(|e| e.violator),
+                true,
+            ),
+            _ => continue,
         };
+
+        let Ok(account) = account else {
+            continue;
+        };
+        if only_if_tracked && !accounts.contains(account) {
+            continue;
+        }
+
+        users.insert(account);
     }
 
     // Send the updates over the channel. A broadcast send never blocks: if the buffer
@@ -401,8 +477,110 @@ mod next_range_test {
 }
 
 #[cfg(test)]
+mod emit_accounts_test {
+    use std::collections::HashSet;
+
+    use alloy::{
+        primitives::{Address, U256},
+        rpc::types::Log,
+        sol_types::SolEvent,
+    };
+    use tokio::sync::broadcast;
+
+    use super::{Events, VaultEvents, emit_accounts};
+    use crate::{
+        accounts::AccountsTracker,
+        types::{Account, VaultBorrowPosition},
+    };
+
+    fn log(address: Address, event: impl SolEvent) -> Log {
+        Log {
+            inner: alloy::primitives::Log {
+                address,
+                data: event.encode_log_data(),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn vault_events_are_only_reported_for_tracked_accounts() {
+        let (evc, vault) = (Address::random(), Address::random());
+        let [liquidated, repaid, deposited] = [(); 3].map(|_| Address::random());
+        let [untracked, new_borrower] = [(); 2].map(|_| Address::random());
+
+        let accounts = AccountsTracker::new();
+        for account in [liquidated, repaid, deposited] {
+            accounts.add(Account::new(
+                account,
+                vec![VaultBorrowPosition::generate_random()],
+                vec![],
+            ));
+        }
+
+        let logs = [
+            log(
+                vault,
+                VaultEvents::Liquidate {
+                    liquidator: Address::random(),
+                    violator: liquidated,
+                    collateral: Address::random(),
+                    repayAssets: U256::from(1),
+                    yieldBalance: U256::from(1),
+                },
+            ),
+            log(
+                vault,
+                VaultEvents::Repay {
+                    account: repaid,
+                    assets: U256::from(1),
+                },
+            ),
+            log(
+                vault,
+                VaultEvents::Deposit {
+                    sender: Address::random(),
+                    owner: deposited,
+                    assets: U256::from(1),
+                    shares: U256::from(1),
+                },
+            ),
+            // A repay by an account without debt is not of interest.
+            log(
+                vault,
+                VaultEvents::Repay {
+                    account: untracked,
+                    assets: U256::from(1),
+                },
+            ),
+            // But an EVC event is, even for an account we do not track yet.
+            log(
+                evc,
+                Events::AccountStatusCheck {
+                    account: new_borrower,
+                    controller: vault,
+                },
+            ),
+        ];
+
+        let (sender, mut receiver) = broadcast::channel(16);
+        emit_accounts(&logs, &accounts, &sender);
+
+        let mut emitted = HashSet::new();
+        while let Ok(account) = receiver.try_recv() {
+            emitted.insert(account);
+        }
+        assert_eq!(
+            emitted,
+            HashSet::from([liquidated, repaid, deposited, new_borrower])
+        );
+    }
+}
+
+#[cfg(test)]
 mod watch_test {
     use super::*;
+    use crate::types::{EVault, VaultBorrowPosition};
     use alloy::{node_bindings::Anvil, primitives::address, providers::ProviderBuilder};
     use std::collections::HashSet;
     use std::time::Duration;
@@ -420,6 +598,16 @@ mod watch_test {
     /// it on a background task, drain everything it emits from that first pass,
     /// then abort it.
     async fn accounts_caught_at_block(block: u64) -> HashSet<Address> {
+        accounts_caught_at_block_with(block, &[], &[]).await
+    }
+
+    /// Like [`accounts_caught_at_block`], with the watcher knowing `vaults` and tracking
+    /// `tracked`, so the vault events of those are caught as well.
+    async fn accounts_caught_at_block_with(
+        block: u64,
+        vaults: &[Address],
+        tracked: &[Address],
+    ) -> HashSet<Address> {
         let mainnet_rpc = std::env::var("MAINNET_RPC").expect("MAINNET_RPC must be set");
 
         let network = Anvil::new()
@@ -434,8 +622,26 @@ mod watch_test {
 
         let (tx, mut rx) = broadcast::channel::<Address>(512);
 
-        let handle =
-            tokio::spawn(async move { watch_chain_for_accounts(provider, EVC, tx, block).await });
+        let known_vaults = Vaults::new(Address::ZERO, Address::ZERO);
+        for vault in vaults {
+            let mut evault = EVault::generate_random();
+            evault.erc4626.address = *vault;
+            known_vaults.insert_vault_for_test(Vault::EVault(Arc::new(evault)));
+        }
+        let vaults = known_vaults;
+
+        let accounts = Arc::new(AccountsTracker::new());
+        for account in tracked {
+            accounts.add(Account::new(
+                *account,
+                vec![VaultBorrowPosition::generate_random()],
+                vec![],
+            ));
+        }
+
+        let handle = tokio::spawn(async move {
+            watch_chain_for_accounts(provider, EVC, vaults, accounts, tx, block).await
+        });
 
         let mut caught = HashSet::new();
 
@@ -494,6 +700,23 @@ mod watch_test {
         assert!(
             caught.contains(&expected),
             "CollateralStatus account {expected} was not caught; got {caught:?}"
+        );
+    }
+
+    /// EVK forgives the violator's account status check, so a liquidation emits no EVC event
+    /// for it. It must be caught from the vault's `Liquidate` and `Repay` events instead.
+    /// https://etherscan.io/tx/0x42533f3be6999ddeba1c3672d70c91f879ee1568ed61085293f7ff41a874a9d8
+    #[tokio::test]
+    async fn catches_the_violator_of_a_liquidation() {
+        let violator = address!("0x65E30583c1939344d57bBCdf3A1Bbb28d41164f2");
+        let vault = address!("0x1f46186af85a967416b17380800c69860b7c516f");
+        let block = 24790466;
+
+        let caught = accounts_caught_at_block_with(block, &[vault], &[violator]).await;
+
+        assert!(
+            caught.contains(&violator),
+            "The liquidated account {violator} was not caught; got {caught:?}"
         );
     }
 }

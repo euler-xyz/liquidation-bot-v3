@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, address};
 use anyhow::anyhow;
 use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use reqwest::Url;
@@ -8,6 +8,10 @@ use tempfile::TempDir;
 use tokio::time::Instant;
 
 use crate::http;
+
+/// The unit of account of USD denominated vaults, the ISO 4217 code of USD (840). It is not a
+/// token so the pricing API does not know it, but oracles quote it with 18 decimals.
+pub const USD: Address = address!("0x0000000000000000000000000000000000000348");
 
 /// Errors that can occur while quoting through the pricing API.
 ///
@@ -152,6 +156,19 @@ async fn get_euler_price(
     )))
 }
 
+/// The price of the [`USD`] unit of account, which by definition is worth a dollar.
+fn usd_unit_of_account_price(chain_id: u64) -> PriceData {
+    PriceData {
+        chain_id,
+        address: USD,
+        price_usd: 1.0,
+        decimals: 18,
+        source: "unit of account".to_string(),
+        confidence: None,
+        timestamp: String::new(),
+    }
+}
+
 impl EulerPricingApi {
     pub fn new(base_url: Url, chain_id: u64) -> Self {
         // Attempt to create a tempdir so we can use it for caching requests.
@@ -186,6 +203,15 @@ impl EulerPricingApi {
             _cache_dir: cache_dir,
         }
     }
+
+    /// The USD price of an asset, which may also be the [`USD`] unit of account.
+    async fn price(&self, asset: Address) -> Result<PriceData, PricingError> {
+        if asset == USD {
+            return Ok(usd_unit_of_account_price(self.chain_id));
+        }
+
+        get_euler_price(&self.client, &self.base_url, self.chain_id, asset).await
+    }
 }
 
 impl PriceAsset for EulerPricingApi {
@@ -210,10 +236,8 @@ impl PriceAsset for EulerPricingApi {
             return Ok(U256::ZERO);
         }
 
-        let input_usd =
-            get_euler_price(&self.client, &self.base_url, self.chain_id, input_asset).await?;
-        let output_usd =
-            get_euler_price(&self.client, &self.base_url, self.chain_id, output_asset).await?;
+        let input_usd = self.price(input_asset).await?;
+        let output_usd = self.price(output_asset).await?;
 
         convert(input_amount, &input_usd, &output_usd)
     }
@@ -221,7 +245,7 @@ impl PriceAsset for EulerPricingApi {
 
 impl UsdValue for EulerPricingApi {
     async fn usd_value(&self, asset: Address, amount: U256) -> Result<f64, PricingError> {
-        let price = get_euler_price(&self.client, &self.base_url, self.chain_id, asset).await?;
+        let price = self.price(asset).await?;
 
         // Only used for rough thresholds, so the precision of a float is plenty.
         let amount: f64 = amount.into();
@@ -266,7 +290,9 @@ fn usd_price_to_u256(price: &PriceData) -> Result<U256, PricingError> {
 
 #[cfg(test)]
 mod test {
-    use crate::prices::{EulerPricingApi, PriceAsset, PriceData, convert};
+    use crate::prices::{
+        EulerPricingApi, PriceAsset, PriceData, convert, usd_unit_of_account_price,
+    };
     use alloy::primitives::{Address, U256, address};
 
     fn price(price_usd: f64, decimals: u32) -> PriceData {
@@ -304,6 +330,18 @@ mod test {
         // 1 USDC (6 decimals, $1) into WETH (18 decimals, $2000) => 0.0005 WETH.
         let out = convert(U256::from(1_000_000), &price(1.0, 6), &price(2000.0, 18)).unwrap();
         assert_eq!(out, U256::from(500_000_000_000_000u64));
+    }
+
+    #[test]
+    fn convert_from_the_usd_unit_of_account() {
+        // $1000 (18 decimals, as oracles quote USD) into WETH (18 decimals, $2000) => 0.5 WETH.
+        let out = convert(
+            U256::from(1000) * U256::from(10).pow(U256::from(18)),
+            &usd_unit_of_account_price(1),
+            &price(2000.0, 18),
+        )
+        .unwrap();
+        assert_eq!(out, U256::from(500_000_000_000_000_000u64));
     }
 
     #[test]

@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::{
     http,
     liquidation::{ExpectedProfit, PreparedLiquidation},
+    oracles::IPriceOracle,
     prices::{PriceAsset, PricingError},
     types::LiquidationReasoningError,
 };
@@ -316,6 +317,84 @@ impl<T: PriceAsset> EulerSwapApi<T> {
             None => Ok(vec![]),
         }
     }
+
+    /// Prices the profit of a liquidation, which is denominated in the borrow asset, in the
+    /// native asset.
+    async fn price_profit(
+        &self,
+        liq: &PreparedLiquidation,
+        profit: U256,
+    ) -> Result<ExpectedProfit, LiquidationReasoningError> {
+        let vault = liq.borrow().vault;
+        let unpriced = || LiquidationReasoningError::Other {
+            message: "Could not calculate profit through the pricing API or the vault oracle"
+                .to_string(),
+        };
+
+        let pricing_err = match self
+            .pricing
+            .quote(vault.asset, profit, self.wrapped_native_asset)
+            .await
+        {
+            Ok(profit_in_native) => return Ok(ExpectedProfit::Native(profit_in_native)),
+            // The pricing API can not price anything on this chain. We still want to perform the
+            // liquidation if its possible, just without knowing the profit.
+            Err(PricingError::ChainNotSupported { chain_id, message }) => {
+                tracing::warn!(
+                    chain_id,
+                    "Pricing API does not support this chain ({message}), proceeding without a profitability check"
+                );
+                return Ok(ExpectedProfit::Unknown);
+            }
+            Err(err) => err,
+        };
+
+        // The pricing API does not know every asset, long tail assets are reported as
+        // `TOKEN_NOT_FOUND`. Value the profit in the unit of account through the borrow vault's
+        // own oracle instead, and price that.
+        let profit_in_unit_of_account = match IPriceOracle::new(vault.adapter, &self.provider)
+            .getQuote(profit, vault.asset, vault.unit_of_account)
+            .call()
+            .await
+        {
+            Ok(amount) => amount,
+            Err(oracle_err) => {
+                tracing::error!(
+                    "Could not price the profit through the pricing API, err: {:?}, nor through the vault oracle, err: {:?}",
+                    pricing_err,
+                    oracle_err
+                );
+                return Err(unpriced());
+            }
+        };
+
+        match self
+            .pricing
+            .quote(
+                vault.unit_of_account,
+                profit_in_unit_of_account,
+                self.wrapped_native_asset,
+            )
+            .await
+        {
+            Ok(profit_in_native) => {
+                tracing::debug!(
+                    asset =? vault.asset,
+                    "The pricing API could not price the borrow asset, priced the profit through the vault oracle instead, err: {pricing_err}"
+                );
+                Ok(ExpectedProfit::Native(profit_in_native))
+            }
+            Err(unit_of_account_err) => {
+                tracing::error!(
+                    "Could not price the profit through the pricing API, err: {:?}, nor its value in the unit of account {}, err: {:?}",
+                    pricing_err,
+                    vault.unit_of_account,
+                    unit_of_account_err
+                );
+                Err(unpriced())
+            }
+        }
+    }
 }
 
 impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
@@ -337,32 +416,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
             };
 
             // Calculate the profit as well as in the native asset.
-            let profit_in_native = match self
-                .pricing
-                .quote(
-                    liq.borrow().vault.asset,
-                    profit,
-                    self.wrapped_native_asset,
-                )
-                .await
-            {
-                Ok(profit_in_native) => ExpectedProfit::Native(profit_in_native),
-                // The pricing API can not price anything on this chain. We still want to
-                // perform the liquidation if its possible, just without knowing the profit.
-                Err(PricingError::ChainNotSupported { chain_id, message }) => {
-                    tracing::warn!(
-                        chain_id,
-                        "Pricing API does not support this chain ({message}), proceeding without a profitability check"
-                    );
-                    ExpectedProfit::Unknown
-                }
-                Err(e) => {
-                    tracing::error!("Could not fetch quote, err: {:?}", e);
-                    return Err(LiquidationReasoningError::Other {
-                        message: "Could not calculate profit through the pricing API".to_string(),
-                    });
-                }
-            };
+            let profit_in_native = self.price_profit(&liq, profit).await?;
 
             return Ok(Some(liq.with_profit(profit_in_native, profit)));
         }
@@ -457,34 +511,7 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                     // The swap outputs the borrow asset, so the profit is denominated in the
                     // borrow asset and must be priced as such.
                     let profit = quote.amount_out - liq.repay_amount();
-                    let profit_in_native = match self
-                        .pricing
-                        .quote(
-                            liq.borrow().vault.asset,
-                            profit,
-                            self.wrapped_native_asset,
-                        )
-                        .await
-                    {
-                        Ok(profit_in_native) => ExpectedProfit::Native(profit_in_native),
-                        // The pricing API can not price anything on this chain. We still want
-                        // to perform the liquidation if its possible (the simulation above
-                        // already succeeded), just without knowing the profit.
-                        Err(PricingError::ChainNotSupported { chain_id, message }) => {
-                            tracing::warn!(
-                                chain_id,
-                                "Pricing API does not support this chain ({message}), proceeding without a profitability check"
-                            );
-                            ExpectedProfit::Unknown
-                        }
-                        Err(e) => {
-                            tracing::error!("Could not fetch quote, err: {:?}", e);
-                            return Err(LiquidationReasoningError::Other {
-                                message: "Could not calculate profit through the pricing API"
-                                    .to_string(),
-                            });
-                        }
-                    };
+                    let profit_in_native = self.price_profit(&liq, profit).await?;
 
                     // NOTE: We could already determine here if this swap is profitable, as we just
                     // did a simulation so we could check gas usage, and we have the potential
@@ -536,6 +563,7 @@ mod test {
     use alloy::{
         primitives::{Address, U256, bytes},
         providers::{Provider, ProviderBuilder},
+        sol_types::SolValue,
     };
     use anyhow::Result;
 
@@ -756,12 +784,14 @@ mod test {
     }
 
     /// Runs `find_swap` through the swap branch, with a mocked swap API returning `amount_out`
-    /// and a mocked RPC under which the liquidation simulation succeeds.
+    /// and a mocked RPC under which the liquidation simulation succeeds. If given, the borrow
+    /// vault's oracle values the profit at `vault_oracle_quote` in the unit of account.
     async fn find_swap_via_swap_path(
         liq: PreparedLiquidation,
         amount_out: U256,
         wrapped_native: Address,
         pricing: PerAssetPricing,
+        vault_oracle_quote: Option<U256>,
     ) -> PreparedLiquidation {
         let asserter = alloy::transports::mock::Asserter::new();
         let provider = ProviderBuilder::new()
@@ -769,6 +799,10 @@ mod test {
             .erased();
         // Response to the `eth_call` that simulates the liquidation.
         asserter.push_success(&alloy::primitives::Bytes::new());
+        // Response to the `eth_call` that quotes the profit through the vault oracle.
+        if let Some(quote) = vault_oracle_quote {
+            asserter.push_success(&alloy::primitives::Bytes::from(quote.abi_encode()));
+        }
 
         let api = EulerSwapApi::new(
             mock_swap_api(amount_out).await,
@@ -803,7 +837,7 @@ mod test {
         let amount_out = U256::from(1_100_000_000u64);
         let liq = liquidation(usdc, weth, repay, U256::from(10).pow(U256::from(18)));
 
-        let prepared = find_swap_via_swap_path(liq, amount_out, weth, pricing).await;
+        let prepared = find_swap_via_swap_path(liq, amount_out, weth, pricing, None).await;
 
         // The profit is denominated in the borrow asset (USDC).
         assert_eq!(prepared.profit_in_asset(), U256::from(100_000_000u64));
@@ -828,12 +862,40 @@ mod test {
         let amount_out = U256::from(1_010_000_000_000_000_000u64);
         let liq = liquidation(weth, usdc, repay, U256::from(2_100_000_000u64));
 
-        let prepared = find_swap_via_swap_path(liq, amount_out, weth, pricing).await;
+        let prepared = find_swap_via_swap_path(liq, amount_out, weth, pricing, None).await;
 
         // The profit is already in the native asset, so it must not be scaled at all.
         let expected = U256::from(10_000_000_000_000_000u64);
         assert_eq!(prepared.profit_in_asset(), expected);
         assert_eq!(prepared.profit(), ExpectedProfit::Native(expected));
+    }
+
+    #[tokio::test]
+    async fn find_swap_prices_an_asset_unknown_to_the_pricing_api_through_the_vault_oracle() {
+        let weth = Address::random();
+        // The pricing API does not know the borrow asset (e.g. `TOKEN_NOT_FOUND`).
+        let long_tail = Address::random();
+
+        // Repay 1000 units; swapping the seized WETH yields 1100 => 100 units profit.
+        let repay = U256::from(1_000u64);
+        let amount_out = U256::from(1_100u64);
+        let liq = liquidation(long_tail, weth, repay, U256::from(10).pow(U256::from(18)));
+
+        // The vault oracle values those 100 units at 40 units of account, each worth 5e8 wei.
+        let unit_of_account = liq.borrow().vault.unit_of_account;
+        let pricing = PerAssetPricing {
+            prices: HashMap::from([(unit_of_account, U256::from(500_000_000u64))]),
+        };
+
+        let vault_oracle_quote = Some(U256::from(40u64));
+        let prepared =
+            find_swap_via_swap_path(liq, amount_out, weth, pricing, vault_oracle_quote).await;
+
+        assert_eq!(prepared.profit_in_asset(), U256::from(100u64));
+        assert_eq!(
+            prepared.profit(),
+            ExpectedProfit::Native(U256::from(20_000_000_000u64))
+        );
     }
 
     // ── response deserialization ────────────────────────────────────────────
