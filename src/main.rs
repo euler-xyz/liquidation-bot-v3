@@ -348,7 +348,8 @@ async fn main() {
         // TODO: Move to config.
         "1", // Max slippage.
         EulerPricingApi::new(config.pricing_url.clone(), config.chain_id),
-    );
+    )
+    .with_native_decimals_offset(config.wrapped_native_decimals_offset);
 
     // Start the liquidation bot.
     run(
