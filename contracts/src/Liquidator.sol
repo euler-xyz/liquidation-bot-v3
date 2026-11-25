@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {ISwapper} from "./ISwapper.sol";
-import {SwapVerifier} from "./SwapVerifier.sol";
-import {IEVC} from "./IEVC.sol";
+import {ISwapper} from "./interfaces/ISwapper.sol";
+import {IEVC} from "./interfaces/IEVC.sol";
 
-import {IERC4626, IERC20} from "./IEVault.sol";
-import {IEVault, IRiskManager, IBorrowing, ILiquidation} from "./IEVault.sol";
+import {IERC4626, IERC20} from "./interfaces/IEVault.sol";
+import {IRiskManager, ILiquidation} from "./interfaces/IEVault.sol";
 
-import {IPyth} from "./IPyth.sol";
+import {IPyth} from "./interfaces/IPyth.sol";
 
 contract Liquidator {
     address public immutable owner;
@@ -24,7 +23,13 @@ contract Liquidator {
     error Unauthorized();
     error LessThanExpectedCollateralReceived();
 
-    constructor(address _owner, address _swapperAddress, address _swapVerifierAddress, address _evcAddress, address _pythAddress) {
+    constructor(
+        address _owner,
+        address _swapperAddress,
+        address _swapVerifierAddress,
+        address _evcAddress,
+        address _pythAddress
+    ) {
         owner = _owner;
         swapperAddress = _swapperAddress;
         swapVerifierAddress = _swapVerifierAddress;
@@ -60,10 +65,13 @@ contract Liquidator {
         uint256 amountCollaterallSeized
     );
 
-    function liquidateSingleCollateral(LiquidationParams calldata params, bytes[] calldata swapperData) external returns (bool success) {
+    function liquidateSingleCollateral(LiquidationParams calldata params, bytes[] calldata swapperData)
+        external
+        returns (bool success)
+    {
         bytes[] memory multicallItems = new bytes[](swapperData.length + 2);
 
-        for (uint256 i = 0; i < swapperData.length; i++){
+        for (uint256 i = 0; i < swapperData.length; i++) {
             multicallItems[i] = swapperData[i];
         }
 
@@ -72,7 +80,8 @@ contract Liquidator {
             abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, type(uint256).max, address(this)));
 
         // Sweep any dust left in the swapper contract
-        multicallItems[swapperData.length + 1] = abi.encodeCall(ISwapper.sweep, (params.borrowedAsset, 0, params.receiver));
+        multicallItems[swapperData.length + 1] =
+            abi.encodeCall(ISwapper.sweep, (params.borrowedAsset, 0, params.receiver));
 
         IEVC.BatchItem[] memory batchItems = new IEVC.BatchItem[](7);
 
@@ -92,7 +101,8 @@ contract Liquidator {
             data: abi.encodeCall(IEVC.enableCollateral, (address(this), params.collateralVault))
         });
 
-        (uint256 maxRepay, uint256 maxYield) = ILiquidation(params.vault).checkLiquidation(address(this), params.violatorAddress, params.collateralVault);
+        (uint256 maxRepay, uint256 maxYield) =
+            ILiquidation(params.vault).checkLiquidation(address(this), params.violatorAddress, params.collateralVault);
 
         // Step 3: Liquidate account in violation
         batchItems[2] = IEVC.BatchItem({
@@ -135,7 +145,6 @@ contract Liquidator {
             data: abi.encodeCall(IEVC.disableCollateral, (address(this), params.collateralVault))
         });
 
-
         // Submit batch to EVC
         evc.batch(batchItems);
 
@@ -149,26 +158,32 @@ contract Liquidator {
         );
 
         if (IERC20(params.collateralVault).balanceOf(address(this)) > 0) {
-            IERC20(params.collateralVault).transfer(params.receiver, IERC20(params.collateralVault).balanceOf(address(this)));
+            IERC20(params.collateralVault)
+                .transfer(params.receiver, IERC20(params.collateralVault).balanceOf(address(this)));
         }
 
         return true;
     }
 
-    function liquidateSingleCollateralWithPythOracle(LiquidationParams calldata params, bytes[] calldata swapperData, bytes[] calldata pythUpdateData) external payable returns (bool success) {
+    function liquidateSingleCollateralWithPythOracle(
+        LiquidationParams calldata params,
+        bytes[] calldata swapperData,
+        bytes[] calldata pythUpdateData
+    ) external payable returns (bool success) {
         bytes[] memory multicallItems = new bytes[](swapperData.length + 2);
 
-        for (uint256 i = 0; i < swapperData.length; i++){
+        for (uint256 i = 0; i < swapperData.length; i++) {
             multicallItems[i] = swapperData[i];
         }
 
         // Use swapper contract to repay borrowed asset
         multicallItems[swapperData.length] =
-            // abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, params.repayAmount, address(this)));
-            abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, type(uint256).max, address(this)));
+        // abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, params.repayAmount, address(this)));
+        abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, type(uint256).max, address(this)));
 
         // Sweep any dust left in the swapper contract
-        multicallItems[swapperData.length + 1] = abi.encodeCall(ISwapper.sweep, (params.borrowedAsset, 0, params.receiver));
+        multicallItems[swapperData.length + 1] =
+            abi.encodeCall(ISwapper.sweep, (params.borrowedAsset, 0, params.receiver));
 
         IEVC.BatchItem[] memory batchItems = new IEVC.BatchItem[](7);
 
@@ -183,7 +198,8 @@ contract Liquidator {
             data: abi.encodeCall(IEVC.enableController, (address(this), params.vault))
         });
 
-        (uint256 maxRepay, uint256 maxYield) = ILiquidation(params.vault).checkLiquidation(address(this), params.violatorAddress, params.collateralVault);
+        (uint256 maxRepay, uint256 maxYield) =
+            ILiquidation(params.vault).checkLiquidation(address(this), params.violatorAddress, params.collateralVault);
 
         // Step 2: enable collateral
         batchItems[1] = IEVC.BatchItem({
@@ -234,7 +250,6 @@ contract Liquidator {
             data: abi.encodeCall(IEVC.disableCollateral, (address(this), params.collateralVault))
         });
 
-
         // Submit batch to EVC
         evc.batch(batchItems);
 
@@ -248,7 +263,8 @@ contract Liquidator {
         );
 
         if (IERC20(params.collateralVault).balanceOf(address(this)) > 0) {
-            IERC20(params.collateralVault).transfer(params.receiver, IERC20(params.collateralVault).balanceOf(address(this)));
+            IERC20(params.collateralVault)
+                .transfer(params.receiver, IERC20(params.collateralVault).balanceOf(address(this)));
         }
 
         return true;
@@ -310,7 +326,12 @@ contract Liquidator {
         return true;
     }
 
-    function simulatePythUpdateAndGetAccountStatus(bytes[] calldata pythUpdateData, uint256 pythUpdateFee, address vaultAddress, address accountAddress) external payable returns (uint256 collateralValue, uint256 liabilityValue) {
+    function simulatePythUpdateAndGetAccountStatus(
+        bytes[] calldata pythUpdateData,
+        uint256 pythUpdateFee,
+        address vaultAddress,
+        address accountAddress
+    ) external payable returns (uint256 collateralValue, uint256 liabilityValue) {
         IEVC.BatchItem[] memory batchItems = new IEVC.BatchItem[](2);
 
         batchItems[0] = IEVC.BatchItem({
@@ -334,7 +355,14 @@ contract Liquidator {
         return (collateralValue, liabilityValue);
     }
 
-    function simulatePythUpdateAndCheckLiquidation(bytes[] calldata pythUpdateData, uint256 pythUpdateFee, address vaultAddress, address liquidatorAddress, address borrowerAddress, address collateralAddress) external payable returns (uint256 maxRepay, uint256 seizedCollateral) {
+    function simulatePythUpdateAndCheckLiquidation(
+        bytes[] calldata pythUpdateData,
+        uint256 pythUpdateFee,
+        address vaultAddress,
+        address liquidatorAddress,
+        address borrowerAddress,
+        address collateralAddress
+    ) external payable returns (uint256 maxRepay, uint256 seizedCollateral) {
         IEVC.BatchItem[] memory batchItems = new IEVC.BatchItem[](2);
 
         batchItems[0] = IEVC.BatchItem({
@@ -358,7 +386,5 @@ contract Liquidator {
         return (maxRepay, seizedCollateral);
     }
 
-    receive() external payable {
-
-    }
+    receive() external payable {}
 }

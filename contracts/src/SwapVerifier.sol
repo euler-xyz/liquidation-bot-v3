@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.0;
 
-import {IEVault, IERC20} from "./IEVault.sol";
+import {IEVault, IERC20} from "./interfaces/IEVault.sol";
 
 /// @title SwapVerifier
 /// @custom:security-contact security@euler.xyz
