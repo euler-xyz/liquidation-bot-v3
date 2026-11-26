@@ -125,6 +125,9 @@ pub struct Config {
     // The wrapped version of the native asset.
     pub wrapped_native_asset_address: Address,
 
+    #[serde(default)]
+    pub wrapped_native_decimals_offset: u8,
+
     // The oracle lens contract.
     pub oracle_lens_address: Address,
 
@@ -530,6 +533,7 @@ mod test {
         validate_configuration_file("https://rpc.soniclabs.com", 146).await;
         validate_configuration_file("https://rpc.tac.build", 239).await;
         validate_configuration_file("https://rpc.hypurrscan.io", 999).await;
+        validate_configuration_file("https://rpc.mainnet.arc.io", 5042).await;
         validate_configuration_file("https://base.api.pocket.network", 8453).await;
         validate_configuration_file("https://rpc.plasma.to", 9745).await;
         validate_configuration_file("https://public-arb-mainnet.fastnode.io", 42161).await;

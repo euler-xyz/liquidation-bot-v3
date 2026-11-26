@@ -191,6 +191,7 @@ pub struct EulerSwapApi<T: PriceAsset> {
     profit_receiver: Address,
     swapper_address: Address,
     wrapped_native_asset: Address,
+    native_decimals_offset: u8,
 
     max_slippage: String,
 
@@ -220,6 +221,7 @@ impl<T: PriceAsset> EulerSwapApi<T> {
             liquidator_eoa,
             swapper_address,
             wrapped_native_asset,
+            native_decimals_offset: 0,
             max_slippage: max_slippage.to_string(),
             pricing,
             // NOTICE: temp work around as without a regular user agent our requests get blocked
@@ -228,6 +230,15 @@ impl<T: PriceAsset> EulerSwapApi<T> {
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:149.0) Gecko/20100101 Firefox/149.0",
             )),
         }
+    }
+
+    pub fn with_native_decimals_offset(mut self, offset: u8) -> Self {
+        self.native_decimals_offset = offset;
+        self
+    }
+
+    fn to_native_units(&self, amount: U256) -> U256 {
+        amount * U256::from(10).pow(U256::from(self.native_decimals_offset))
     }
 
     pub async fn get_swap_quotes(&self, params: &SwapParams) -> Result<Vec<SwapQuote>> {
@@ -346,7 +357,9 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                 )
                 .await
             {
-                Ok(profit_in_native) => ExpectedProfit::Native(profit_in_native),
+                Ok(profit_in_native) => {
+                    ExpectedProfit::Native(self.to_native_units(profit_in_native))
+                }
                 // The pricing API can not price anything on this chain. We still want to
                 // perform the liquidation if its possible, just without knowing the profit.
                 Err(PricingError::ChainNotSupported { chain_id, message }) => {
@@ -466,7 +479,9 @@ impl<T: PriceAsset> SwapQuoteProvider for EulerSwapApi<T> {
                         )
                         .await
                     {
-                        Ok(profit_in_native) => ExpectedProfit::Native(profit_in_native),
+                        Ok(profit_in_native) => {
+                            ExpectedProfit::Native(self.to_native_units(profit_in_native))
+                        }
                         // The pricing API can not price anything on this chain. We still want
                         // to perform the liquidation if its possible (the simulation above
                         // already succeeded), just without knowing the profit.
@@ -763,6 +778,16 @@ mod test {
         wrapped_native: Address,
         pricing: PerAssetPricing,
     ) -> PreparedLiquidation {
+        find_swap_via_swap_path_with_offset(liq, amount_out, wrapped_native, pricing, 0).await
+    }
+
+    async fn find_swap_via_swap_path_with_offset(
+        liq: PreparedLiquidation,
+        amount_out: U256,
+        wrapped_native: Address,
+        pricing: PerAssetPricing,
+        native_decimals_offset: u8,
+    ) -> PreparedLiquidation {
         let asserter = alloy::transports::mock::Asserter::new();
         let provider = ProviderBuilder::new()
             .connect_mocked_client(asserter.clone())
@@ -780,7 +805,8 @@ mod test {
             wrapped_native,
             "0.1",
             pricing,
-        );
+        )
+        .with_native_decimals_offset(native_decimals_offset);
 
         api.find_swap(liq)
             .await
@@ -834,6 +860,28 @@ mod test {
         let expected = U256::from(10_000_000_000_000_000u64);
         assert_eq!(prepared.profit_in_asset(), expected);
         assert_eq!(prepared.profit(), ExpectedProfit::Native(expected));
+    }
+
+    #[tokio::test]
+    async fn find_swap_scales_profit_to_native_decimals() {
+        let usdc = Address::random();
+        let weth = Address::random();
+        let pricing = PerAssetPricing {
+            prices: HashMap::new(),
+        };
+
+        let repay = U256::from(1_000_000_000u64);
+        let amount_out = U256::from(1_100_000_000u64);
+        let liq = liquidation(usdc, weth, repay, U256::from(10).pow(U256::from(18)));
+
+        let prepared =
+            find_swap_via_swap_path_with_offset(liq, amount_out, usdc, pricing, 12).await;
+
+        assert_eq!(prepared.profit_in_asset(), U256::from(100_000_000u64));
+        assert_eq!(
+            prepared.profit(),
+            ExpectedProfit::Native(U256::from(100u64) * U256::from(10).pow(U256::from(18)))
+        );
     }
 
     // ── response deserialization ────────────────────────────────────────────

@@ -1,0 +1,25 @@
+swap_url = "https://swap.euler.finance"
+pricing_url = "https://v3.euler.finance"
+subgraph_url_path = "subgraphs/euler-simple-arc/latest/gn"
+evc_address = "0xf721258d9De993147B22ef7802b42C48Dd707349"
+swapper_address = "0x6DC673Fb65E7930c2e006c9F5dC9680108b5B4af"
+# Arc has no wrapped native token: native USDC (18 decimals) pays gas, and its ERC-20 interface
+# (6 decimals) stands in for it. The offset scales priced profit up to native USDC's decimals.
+wrapped_native_asset_address = "0x3600000000000000000000000000000000000000"
+wrapped_native_decimals_offset = 12
+oracle_lens_address = "0x7F61Be92926c066d859BfdcAFC0a56706af3455b"
+vault_lens_address = "0x788Ff2968112c30714bfC06cd75ebB49abe252e5"
+account_lens_address = "0x0B2275d17716dA60B70074d59e740241c5F34693"
+utils_lens_address = "0x9996ccA49983E0e0d2Ff6e70c1D973C61198A46A"
+liquidator_address = "0x40A8F51c6c4937c5782AF998bf861F61814cB7c7"
+# Liquidation bot v2 address is for now the profit receiver.
+profit_receiver = "0x8cbB534874bab83e44a7325973D2F04493359dF8"
+
+oracle_polling_interval_seconds = 30
+full_resync_and_check_interval_seconds = 3600
+vault_shares_polling_interval_seconds = 60
+enable_observability_api = true
+
+[pyth]
+address = "0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a"
+endpoint = "https://hermes.pyth.network/"
